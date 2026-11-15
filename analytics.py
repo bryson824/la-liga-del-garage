@@ -429,7 +429,9 @@ def draft_analysis(conn: sqlite3.Connection, through_week: Optional[int] = None
                        else min(0, overall - (len(real_adp) + 1)))})
 
     # Passed over: the best player, any position, taken before this team's next
-    # turn. Back-to-back picks share the window after the pair.
+    # turn. Back-to-back picks share the window after the pair. The last pick has
+    # no next turn, so "could have waited" looks at players nobody drafted.
+    pick_of = {pid: overall for overall, _, pid in sv["picks"]}
     by_team: Dict[int, List[Dict[str, Any]]] = {}
     for pk in picks:
         by_team.setdefault(pk["team_id"], []).append(pk)
@@ -446,6 +448,18 @@ def draft_analysis(conn: sqlite3.Connection, through_week: Optional[int] = None
         pk["passed"] = best and {"name": best["name"], "pos": best["pos"], "pick": best["pick"],
                                  "team_id": best["team_id"], "over": best["over"],
                                  "gap": best["over"] - pk["over"]}
+        # Could have waited: the best player at the same position still on the
+        # board at this team's next turn (drafted then or later, or never).
+        pk["wait"] = None
+        if pk["graded"]:
+            pos_id = sv["position"].get(pk["player_id"])
+            alt = max((pid for pid in sv["raw"]
+                       if sv["position"][pid] == pos_id and pid != pk["player_id"]
+                       and pick_of.get(pid, 10 ** 9) >= end),
+                      key=lambda pid: sv["raw"][pid], default=None)
+            if alt is not None and _over(sv, alt) > 0:
+                pk["wait"] = {"name": nm(alt), "pick": pick_of.get(alt),
+                              "over": _over(sv, alt), "edge": pk["over"] - _over(sv, alt)}
 
     teams = []
     for t, tp in by_team.items():
