@@ -25,7 +25,8 @@
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased; }
 .page { max-width: 1120px; margin: 0 auto; padding: 0 28px 80px; }
-header { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 24px; padding: 30px 0 16px; }
+.top { position: sticky; top: 0; z-index: 4; background: var(--bg); }
+header { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 24px; padding: 18px 0 12px; }
 h1 { font: 600 28px/1.1 var(--serif); margin: 0; letter-spacing: -.01em; }
 .sub { color: var(--ink2); font-size: 13px; margin-top: 5px; }
 .spacer { flex: 1; }
@@ -84,7 +85,7 @@ tr.cut td { border-bottom: 1px solid var(--ink); }
 .bar i { position: absolute; top: 2px; height: 8px; }
 .bar::before { content: ""; position: absolute; left: 50%; top: -1px; bottom: -1px; width: 1px; background: var(--ink3); }
 .row { display: flex; gap: 8px 22px; align-items: baseline; flex-wrap: wrap; margin: 6px 0 10px; }
-.seg { display: flex; gap: 16px; } .seg button { background: none; border: 0; padding: 0 0 2px; cursor: pointer;
+.seg { display: flex; gap: 6px 16px; flex-wrap: wrap; } .seg button { background: none; border: 0; padding: 0 0 2px; cursor: pointer;
   color: var(--ink2); border-bottom: 1.5px solid transparent; } .seg button.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
 .key { display: flex; gap: 18px; font-size: 12px; color: var(--ink2); flex-wrap: wrap; }
 .key .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--c); }
@@ -97,11 +98,36 @@ svg text { fill: var(--ink2); font: 11px var(--sans); } svg .lbl { fill: var(--i
 .trade:last-of-type { border-bottom: 1px solid var(--rule); }
 .trade .tot { font: 600 20px/1.2 var(--serif); }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 0 44px; }
-@media (max-width: 640px) { .page { padding: 0 16px 60px; } .trade { grid-template-columns: 1fr; } .two { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .page { padding: 0 14px 60px; }
+  /* On a phone only the tab bar stays pinned; the title scrolls away. */
+  .top { display: contents; }
+  header { padding: 14px 0 10px; gap: 6px 16px; }
+  h1 { font-size: 22px; } .sub { font-size: 12px; margin-top: 3px; }
+  header .spacer { display: none; } header select { max-width: 190px; }
+  nav { position: sticky; top: 0; z-index: 4; background: var(--bg); gap: 18px;
+    margin: 0 -14px; padding: 0 14px; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  nav button { padding: 12px 0 10px; font-size: 14px; }
+  section { padding-top: 20px; } h2 { font-size: 18px; margin-top: 34px; }
+  th, td { padding-left: 7px; padding-right: 7px; } td { font-size: 13px; }
+  .scroll { margin: 0 -14px; padding: 0 14px; }
+  .games { gap: 26px; } .side .pts { font-size: 22px; }
+  .cmp { table-layout: fixed; } .cmp td { white-space: normal; padding: 4px 4px; font-size: 12px; line-height: 1.25; }
+  .cmp td:nth-child(1), .cmp td:nth-child(5) { width: auto; }
+  .cmp col.cp { width: 56px; } .cmp col.cs { width: 36px; }
+  .cmp td:nth-child(2), .cmp td:nth-child(4) { white-space: nowrap; } .cmp td:nth-child(3) { font-size: 10px; }
+  #chart { overflow-x: auto; margin: 0 -14px; padding: 0 14px; } #chart svg { min-width: 760px; }
+  .cmp thead th { white-space: normal; }
+  .trade { grid-template-columns: minmax(0, 1fr); } .two { grid-template-columns: minmax(0, 1fr); }
+  .bar { width: 70px; }
+  #tip { max-width: 220px; }
+}
 </style>
 </head>
 <body>
 <div class="page">
+<div class="top">
 <header>
   <div><h1 id="title">Fantasy dashboard</h1><div class="sub" id="sub">Loading…</div></div>
   <div class="spacer"></div>
@@ -109,6 +135,7 @@ svg text { fill: var(--ink2); font: 11px var(--sans); } svg .lbl { fill: var(--i
   <button class="link ctl" id="refresh">Refresh</button>
 </header>
 <nav id="nav"></nav>
+</div>
 <div id="err"></div>
 <section id="live"></section>
 <section id="standings"></section>
@@ -130,7 +157,11 @@ const pc = x => x == null ? "–" : Math.round(x * 100) + "%";
 const f1 = x => x == null ? "–" : (Math.round(x * 10) / 10).toFixed(1);
 const sg = x => x == null ? "–" : (x > 0.049 ? "+" : x < -0.049 ? "−" : "") + f1(Math.abs(x));
 const T = id => D.teams[id] ? D.teams[id].name : (id ? "Team " + id : "Free agent");
-const tn = id => esc(T(id));
+const narrow = () => innerWidth < 640;
+const clip = (t, n) => t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
+// On a phone long team names are clipped so tables keep room for numbers.
+const tn = id => narrow() ? `<span title="${esc(T(id))}">${esc(clip(T(id), 15))}</span>` : esc(T(id));
+const short = nm => !narrow() || / D\/ST$/.test(nm) ? nm : nm.replace(/^(\S)\S*\s+/, "$1. ");
 const me = id => id === team ? ' class="me"' : "";
 const day = ms => new Date(ms).toLocaleDateString([], {month: "short", day: "numeric"});
 const rec = r => r[0] + "–" + r[1] + (r[2] ? "–" + r[2] : "");
@@ -139,11 +170,15 @@ const table = (head, rows) => `<div class="scroll"><table><thead><tr>${head.map(
 const how = t => `<details class="how"><summary>How this is worked out</summary>${t}</details>`;
 
 $("nav").innerHTML = TABS.map(t => `<button data-t="${t[0]}">${t[1]}</button>`).join("");
-$("nav").onclick = e => { if (e.target.dataset.t) { tab = localStorage.tab = e.target.dataset.t; showTab(); } };
+$("nav").onclick = e => { if (e.target.dataset.t) { tab = localStorage.tab = e.target.dataset.t; showTab();
+  const y = document.querySelector("section.on").getBoundingClientRect().top + scrollY - document.getElementById("nav").getBoundingClientRect().bottom;
+  if (scrollY > y) scrollTo(0, Math.max(0, y)); } };
 function showTab() {
   if (!TABS.some(t => t[0] === tab)) tab = "live";
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.t === tab));
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === tab));
+  const on = document.querySelector("nav button.on");
+  if (on && on.scrollIntoView) on.scrollIntoView({block: "nearest", inline: "center"});
 }
 $("team").onchange = e => { team = +e.target.value; localStorage.team = team; render(); };
 $("refresh").onclick = async () => {
@@ -184,8 +219,8 @@ function rLive(open) {
      <span class="st">Projected ${f2(s.projected)} · ${s.playing} playing, ${s.yet_to_play} to play</span></div>`;
   const pts = r => !r ? "" : r.state === "bye" ? m("bye") : r.state === "upcoming" ? m("proj " + f1(r.projected)) : f2(r.points);
   const played = r => r && r.state !== "upcoming" && r.state !== "bye";
-  const nameL = r => r ? `${esc(r.name)}<span class="dot ${r.state}" style="margin:0 0 0 6px"></span>` : "";
-  const nameR = r => r ? `<span class="dot ${r.state}"></span>${esc(r.name)}` : "";
+  const nameL = r => r ? `${esc(short(r.name))}<span class="dot ${r.state}" style="margin:0 0 0 6px"></span>` : "";
+  const nameR = r => r ? `<span class="dot ${r.state}"></span>${esc(short(r.name))}` : "";
   const line = (a, b, label, dim) => { const w = played(a) && played(b) ? (a.points > b.points ? 1 : b.points > a.points ? 2 : 0) : 0;
     return `<tr${dim ? ' class="m"' : ""}><td class="n">${nameL(a)}</td><td class="n"${w === 1 ? ' style="font-weight:700"' : ""}>${pts(a)}</td><td class="c m">${label}</td><td${w === 2 ? ' style="font-weight:700"' : ""}>${pts(b)}</td><td>${nameR(b)}</td></tr>`; };
   const compare = g => { if (!g.home || !g.away) return "";
@@ -193,7 +228,7 @@ function rLive(open) {
     const [hs, hb] = split(g.home), [as, ab] = split(g.away); let rows = "";
     for (let i = 0; i < Math.max(hs.length, as.length); i++) rows += line(hs[i], as[i], (hs[i] || as[i]).slot);
     for (let i = 0; i < Math.max(hb.length, ab.length); i++) rows += line(hb[i], ab[i], "Bench", true);
-    return `<table class="cmp"><thead><tr><th class="n" colspan="2">${tn(g.home.team_id)}</th><th></th><th colspan="2">${tn(g.away.team_id)}</th></tr></thead><tbody>${rows}</tbody></table>`; };
+    return `<table class="cmp"><colgroup><col><col class="cp"><col class="cs"><col class="cp"><col></colgroup><thead><tr><th class="n" colspan="2">${tn(g.home.team_id)}</th><th></th><th colspan="2">${tn(g.away.team_id)}</th></tr></thead><tbody>${rows}</tbody></table>`; };
   $("live").innerHTML = `<h2>Week ${L.week}</h2>
     <p class="note"><span class="dot playing"></span>playing now &nbsp; <span class="dot upcoming"></span>yet to play &nbsp; <span class="dot done"></span>finished. Scores are as of the last update${L.games_in_progress ? (STATIC ? " and refresh every few minutes while games are on" : " and refresh every minute while games are on") : ""}.</p>
     <div class="games">` + gs.map(g => { const k = (g.home || {}).team_id;
@@ -219,7 +254,7 @@ function rBench() {
   const B = D.bench, weeks = [...new Set(B.weeks.map(w => w.week))].sort((a, b) => a - b);
   const by = {}; B.weeks.forEach(w => by[w.team_id + ":" + w.week] = w);
   const sum = B.teams.map(t => `<tr${me(t.team_id)}><td>${tn(t.team_id)}</td><td class="n">${f1(t.total_lost)}</td><td class="n">${Math.round(t.efficiency * 100)}%</td><td class="c">${rec(t.record)}</td><td class="n">${t.avoidable_losses || m("0")}</td><td class="n">${t.one_call_losses || m("0")}</td><td class="c">${rec(t.perfect_record)}</td><td class="c">${rec(t.ideal_record)}</td></tr>`);
-  const modes = {lost: "Points left on bench", perfect: "Best lineup vs. their real lineup", ideal: "Best lineup vs. their best lineup"};
+  const modes = narrow() ? {lost: "Points left", perfect: "Best vs. real", ideal: "Best vs. best"} : {lost: "Points left on bench", perfect: "Best lineup vs. their real lineup", ideal: "Best lineup vs. their best lineup"};
   const mxLost = Math.max(...B.weeks.map(w => w.lost));
   const cell = w => { if (!w) return "<td></td>";
     const tipTxt = w.opp_id == null ? "" : `Week ${w.week} vs ${T(w.opp_id)}: ${w.result === "W" ? "won" : w.result === "L" ? "lost" : "tied"} ${f1(w.actual)}–${f1(w.opp_actual)}. Best lineup ${f1(w.optimal)}; their best ${f1(w.opp_optimal)}.`;
@@ -360,17 +395,17 @@ function rSwap() {
 
 function rHistory() {
   const H = D.history, ms = H.managers, name = k => { const x = ms.find(z => z.key === k); return x && x.name ? x.name : ""; };
-  const who = x => esc(x.name || "Former manager");
+  const cn = t => esc(narrow() ? clip(t || "", 15) : (t || "")), who = x => cn(x.name || "Former manager");
   const fin = r => r == null ? m("–") : r === 1 ? "<b>1st</b>" : r + (r === 2 ? "nd" : r === 3 ? "rd" : "th");
   const all = ms.filter(x => x.seasons).map(x => `<tr${me(x.team_id)}><td>${who(x)}</td><td class="c">${x.wins}–${x.losses}${x.ties ? "–" + x.ties : ""}</td><td class="n">${x.win_pct == null ? "–" : x.win_pct.toFixed(3).replace(/^0/, "")}</td><td class="n">${f1(x.points_for / Math.max(1, x.wins + x.losses + x.ties))}</td><td class="n">${x.titles || m("0")}</td><td class="n">${x.playoffs}</td>${H.seasons.map(s => `<td class="c" title="${esc(x.finishes[s] ? x.finishes[s].name + ", " + x.finishes[s].record : "")}">${fin(x.finishes[s] && x.finishes[s].rank)}</td>`).join("")}<td class="n">${f1(x.avg_finish)}</td></tr>`);
   const order = ms.filter(x => x.team_id);
-  const h2h = order.map(a => `<tr${me(a.team_id)}><td>${esc(a.name)}</td>` + order.map(b => { if (a.key === b.key) return `<td class="c m">·</td>`;
+  const h2h = order.map(a => `<tr${me(a.team_id)}><td>${cn(a.name)}</td>` + order.map(b => { if (a.key === b.key) return `<td class="c m">·</td>`;
     const r = (H.h2h[a.key] || {})[b.key]; if (!r) return `<td class="c m">–</td>`; const d = r[0] - r[1];
     return `<td class="c" data-tip="${esc(a.name + " vs " + b.name)}" style="${d ? `background:rgba(var(--${d > 0 ? "pos" : "neg"}),${Math.min(0.4, Math.abs(d) * 0.09)})` : ""}">${r[0]}–${r[1]}</td>`; }).join("") + "</tr>");
-  const game = (rows, fmt) => table([["Team"],["Season"],["Wk",1],["Score",1],["Against"]], rows.map(g => `<tr${me((ms.find(z => z.key === g.key) || {}).team_id)}><td>${esc(g.team)} ${m(esc(name(g.key) !== g.team ? name(g.key) : ""))}</td><td>${g.season}${g.playoff ? " " + m("playoffs") : ""}</td><td class="n">${g.week}</td><td class="n">${fmt(g)}</td><td>${esc(g.opp_team)} ${m(f1(g.opp_points))}</td></tr>`));
+  const game = (rows, fmt) => table([["Team"],["Season"],["Wk",1],["Score",1],["Against"]], rows.map(g => `<tr${me((ms.find(z => z.key === g.key) || {}).team_id)}><td>${cn(g.team)} ${m(narrow() ? "" : esc(name(g.key) !== g.team ? name(g.key) : ""))}</td><td>${g.season}${g.playoff ? " " + m("playoffs") : ""}</td><td class="n">${g.week}</td><td class="n">${fmt(g)}</td><td>${cn(g.opp_team)} ${m(f1(g.opp_points))}</td></tr>`));
   const DR = H.drafting, ord = r => r + (r === 1 ? "st" : r === 2 ? "nd" : r === 3 ? "rd" : "th");
   const drRows = DR.rows.map(r => `<tr${me(r.team_id)}><td>${who(r)}</td>${DR.seasons.map(y => { const v = r.by_season[y]; return `<td class="n" title="${v ? esc("Vs. slot " + sg(v.vs_slot)) : ""}">${v ? `${v.rank === 1 ? "<b>" + f1(v.value) + "</b>" : f1(v.value)} ${m(ord(v.rank))}` : m("–")}</td>`; }).join("")}<td class="n">${r.avg_rank.toFixed(1)}</td><td class="n">${ord(r.best_rank)} ${m("/")} ${ord(r.worst_rank)}</td><td class="n">${f1(r.finished_value)}</td><td class="n">${sg(r.finished_vs_slot)}</td></tr>`);
-  const pickTable = rows => table([["Manager"],["Pick"],["Season"],["Over repl.",1],["Vs. slot",1]], rows.map(x => `<tr${me((ms.find(z => z.key === x.key) || {}).team_id)}><td>${esc(name(x.key) || x.team)}</td><td>${esc(x.name)} ${m(`${x.pos} · #${x.pick}`)}</td><td>${x.season}</td><td class="n">${f1(x.over)}</td><td class="n">${sg(x.vs_slot)}</td></tr>`));
+  const pickTable = rows => table([["Manager"],["Pick"],["Season"],["Over repl.",1],["Vs. slot",1]], rows.map(x => `<tr${me((ms.find(z => z.key === x.key) || {}).team_id)}><td>${cn(name(x.key) || x.team)}</td><td>${esc(x.name)} ${m(`${x.pos} · #${x.pick}`)}</td><td>${x.season}</td><td class="n">${f1(x.over)}</td><td class="n">${sg(x.vs_slot)}</td></tr>`));
   const tend = H.tendencies.map(t => { const e = Object.entries(t.early).sort((a, b) => b[1] - a[1]).map(([p, c]) => `${p} ${c}`).join(" · ");
     return `<tr${me(t.team_id)}><td>${who(t)}</td><td class="n">${t.drafts}</td><td>${e}</td><td class="n">${f1(t.first_qb)}</td><td class="n">${f1(t.first_te)}</td></tr>`; });
   const when = f => f.picks.map(x => `${x.season} R${x.round}`).join(", ");
@@ -396,6 +431,8 @@ function rHistory() {
   hoverTips($("h2h"));
 }
 
+let wasNarrow = narrow();
+addEventListener("resize", () => { if (D && narrow() !== wasNarrow) { wasNarrow = narrow(); render(); } });
 load(); setInterval(load, 60000);
 </script>
 </body>
