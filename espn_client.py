@@ -54,17 +54,21 @@ def load_env(path: Optional[Path] = None) -> Dict[str, str]:
 def _slim_player(p: Dict[str, Any], season: int) -> Dict[str, Any]:
     pl = p.get("player") or {}
     total = avg = None
+    weekly: Dict[str, float] = {}
     for s in pl.get("stats") or []:
-        if (s.get("seasonId") == season and s.get("statSourceId") == 0
-                and s.get("statSplitTypeId") == 0):
+        if s.get("seasonId") != season or s.get("statSourceId") != 0:
+            continue
+        if s.get("statSplitTypeId") == 0:
             total, avg = s.get("appliedTotal"), s.get("appliedAverage")
+        elif s.get("statSplitTypeId") == 1 and s.get("scoringPeriodId"):
+            weekly[str(s["scoringPeriodId"])] = s.get("appliedTotal") or 0.0
     own = pl.get("ownership") or {}
     return {
         "id": p.get("id"), "name": (pl.get("fullName") or "").strip(),
         "positionId": pl.get("defaultPositionId"), "proTeamId": pl.get("proTeamId"),
         "onTeamId": p.get("onTeamId"), "status": p.get("status"),
         "injuryStatus": pl.get("injuryStatus"),
-        "seasonPoints": total, "seasonAvg": avg,
+        "seasonPoints": total, "seasonAvg": avg, "weekly": weekly,
         "adp": own.get("averageDraftPosition"), "pctOwned": own.get("percentOwned"),
     }
 
@@ -186,12 +190,21 @@ class EspnClient:
         return self.get("transactions_wk%02d" % week, ["mTransactions2"],
                         scoring_period=week, refresh=refresh)
 
+    @staticmethod
+    def _top_filter(year: int, limit: int) -> Dict[str, Any]:
+        """Top scorers of a season, with every week's score attached."""
+        return {"players": {
+            "limit": limit,
+            "sortAppliedStatTotal": {"sortAsc": False, "sortPriority": 1,
+                                     "value": "00%d" % year},
+            "filterStatsForTopScoringPeriodIds": {
+                "value": 18, "additionalValue": ["00%d" % year, "10%d" % year]}}}
+
     def players_top(self, limit: int = 500, refresh: bool = False) -> List[Dict[str, Any]]:
-        """Top scorers this season (rostered or not), slimmed."""
-        flt = {"players": {"limit": limit, "sortAppliedStatTotal": {
-            "sortAsc": False, "sortPriority": 1, "value": "00%d" % self.season}}}
+        """Top scorers this season (rostered or not) with weekly scores, slimmed."""
         return self.get(
-            "players_top", ["kona_player_info"], refresh=refresh, fantasy_filter=flt,
+            "players_weekly", ["kona_player_info"], refresh=refresh,
+            fantasy_filter=self._top_filter(self.season, limit),
             transform=lambda d: [_slim_player(p, self.season) for p in d.get("players", [])])
 
     def players_by_ids(self, ids: Iterable[int], refresh: bool = False
@@ -273,5 +286,17 @@ class EspnClient:
                        "teamId": p.get("teamId"), "playerId": p.get("playerId")}
                       for p in (d.get("draftDetail") or {}).get("picks", [])],
         }
+        self._write(name, out)
+        return out
+
+    def players_season(self, year: int, limit: int = 500) -> List[Dict[str, Any]]:
+        """Top scorers of a finished earlier season, slimmed. Cached for good."""
+        name = "players_weekly_%d" % year
+        cached = self._read(name)
+        if cached is not None:
+            return cached
+        d = self._fetch([("view", "kona_player_info")],
+                        fantasy_filter=self._top_filter(year, limit), season=year)
+        out = [_slim_player(p, year) for p in d.get("players", [])]
         self._write(name, out)
         return out

@@ -125,6 +125,7 @@ let D = null, tab = localStorage.tab || "live", team = null, pos = "All", gridMo
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const f2 = x => x == null ? "–" : (Math.round(x * 100) / 100).toFixed(2);
+const pc = x => x == null ? "–" : Math.round(x * 100) + "%";
 const f1 = x => x == null ? "–" : (Math.round(x * 10) / 10).toFixed(1);
 const sg = x => x == null ? "–" : (x > 0.049 ? "+" : x < -0.049 ? "−" : "") + f1(Math.abs(x));
 const T = id => D.teams[id] ? D.teams[id].name : (id ? "Team " + id : "Free agent");
@@ -200,17 +201,17 @@ function rLive(open) {
 }
 
 function rStandings() {
-  const dv = {}; D.draft.teams.forEach(g => dv[g.team_id] = g.value);
+  const dv = {}; D.draft.teams.forEach(g => dv[g.team_id] = g.efficiency);
   const eff = {}; D.bench.teams.forEach(b => eff[b.team_id] = b.efficiency);
   const mx = Math.max(1, ...D.standings.map(s => Math.abs(s.luck)));
   const rows = D.standings.map((s, i) => {
     const w = Math.abs(s.luck) / mx * 50, left = s.luck >= 0 ? 50 : 50 - w;
     const cls = [s.team_id === team ? "me" : "", i + 1 === D.playoff_teams ? "cut" : ""].join(" ").trim();
-    return `<tr class="${cls}"><td class="n m">${i + 1}</td><td>${tn(s.team_id)}</td><td>${rec([s.wins, s.losses, s.ties])}</td><td class="n">${f1(s.points_for)}</td><td class="n">${f1(s.points_against)}</td><td>${s.all_play.replace("-", "–")}</td><td class="n">${f1(s.expected_wins)}</td><td class="n">${sg(s.luck)}</td><td><div class="bar"><i style="left:${left}%;width:${w}%;background:rgb(var(--${s.luck >= 0 ? "pos" : "neg"}))"></i></div></td><td class="n">${sg(dv[s.team_id])}</td><td class="n">${eff[s.team_id] ? Math.round(eff[s.team_id] * 100) + "%" : ""}</td></tr>`; });
+    return `<tr class="${cls}"><td class="n m">${i + 1}</td><td>${tn(s.team_id)}</td><td>${rec([s.wins, s.losses, s.ties])}</td><td class="n">${f1(s.points_for)}</td><td class="n">${f1(s.points_against)}</td><td>${s.all_play.replace("-", "–")}</td><td class="n">${f1(s.expected_wins)}</td><td class="n">${sg(s.luck)}</td><td><div class="bar"><i style="left:${left}%;width:${w}%;background:rgb(var(--${s.luck >= 0 ? "pos" : "neg"}))"></i></div></td><td class="n">${pc(dv[s.team_id])}</td><td class="n">${eff[s.team_id] ? Math.round(eff[s.team_id] * 100) + "%" : ""}</td></tr>`; });
   $("standings").innerHTML = `<h2>Standings and luck</h2>
     <p class="note">Weeks 1–${D.through_week}. The heavy rule is the playoff line (top ${D.playoff_teams}). Luck is real wins minus expected wins.</p>` +
-    how(` All-play is a team's record had it played every other team every week. Expected wins applies that win rate to the games played. Draft value and lineup efficiency are this dashboard's own measures, not ESPN's; see the Draft and Lineups tabs. Points for and against come from ESPN and can include the week in progress.`) +
-    table([["",1],["Team"],["Record"],["PF",1],["PA",1],["All-play"],["Exp. wins",1],["Luck",1],[""],["Draft value",1,"Points the draft returned above or below an average draft from the same slots"],["Lineup eff.",1,"Actual points as a share of the best possible lineup"]], rows);
+    how(` All-play is a team's record had it played every other team every week. Expected wins applies that win rate to the games played. Draft efficiency and lineup efficiency are this dashboard's own measures, not ESPN's; see the Draft and Lineups tabs. Points for and against come from ESPN and can include the week in progress.`) +
+    table([["",1],["Team"],["Record"],["PF",1],["PA",1],["All-play"],["Exp. wins",1],["Luck",1],[""],["Draft eff.",1,"What the draft produced as a share of a perfect draft from the same picks"],["Lineup eff.",1,"Actual points as a share of the best possible lineup"]], rows);
 }
 
 function rBench() {
@@ -258,36 +259,40 @@ function hoverTips(el) {
 }
 
 function rDraft() {
-  const R = D.draft, mine = R.picks.filter(p => p.team_id === team), total = R.picks.length, rp = R.replacement;
-  const teams = R.teams.map(g => `<tr${me(g.team_id)}><td class="n m">${g.rank}</td><td>${tn(g.team_id)}</td><td class="n">${sg(g.value)}</td><td class="n">${f1(g.over)}</td><td>${esc(g.best.name)} ${m(`#${g.best.pick} · ${sg(g.best.value)}`)}</td><td>${esc(g.worst.name)} ${m(`#${g.worst.pick} · ${sg(g.worst.value)}`)}</td><td class="n">${g.steals}</td><td class="n">${g.busts}</td></tr>`);
-  const pass = p => p ? `${esc(p.name)} ${m(`${p.pos} · #${p.pick} · ${f1(p.points)}`)}` : m("–");
-  const rd = p => p.redraft_pick == null ? m("–") : p.redraft_pick > total ? m("undrafted") : "#" + p.redraft_pick;
-  const picks = mine.map(p => `<tr><td class="n m">${p.pick}</td><td>${esc(p.name)} ${p.label ? `<span class="tag ${p.label === "steal" ? "good" : "bad"}">${p.label}</span>` : ""}</td><td>${p.pos}${p.pos_drafted} ${m("→")} ${p.pos_finish ? p.pos + p.pos_finish : "–"}</td><td class="n">${f1(p.points)}</td><td class="n">${f1(p.over)}</td><td class="n">${sg(p.value)}</td><td class="n">${p.adp_rank ? "#" + p.adp_rank : m("undrafted")}</td><td class="n">${rd(p)}</td><td>${pass(p.passed)}</td><td class="n">${p.passed ? "+" + f1(p.passed.gap) : ""}</td></tr>`);
-  const regrets = R.regrets.map(r => `<tr${me(r.team_id)}><td>${tn(r.team_id)}</td><td>${esc(r.took)} ${m(`${r.took_pos} · #${r.took_pick} · ${f1(r.took_points)}`)}</td><td>${esc(r.name)} ${m(`${r.pos} · #${r.pick} · ${f1(r.points)}`)}</td><td>${tn(r.taken_by)}</td><td class="n">+${f1(r.gap)}</td></tr>`);
-  const redraft = R.redraft.slice(0, 36).map(r => `<tr${me(r.team_id)}><td class="n m">${r.redraft_pick}</td><td>${esc(r.name)}</td><td>${r.pos}${r.pos_finish || ""}</td><td class="n">${f1(r.points)}</td><td class="n">${f1(r.over)}</td><td class="n">${r.actual_pick ? "#" + r.actual_pick : m("undrafted")}</td><td class="n">${r.actual_pick ? (d => d > 0 ? "↑ " + d : d < 0 ? "↓ " + -d : m("–"))(r.actual_pick - r.redraft_pick) : ""}</td><td>${r.team_id ? tn(r.team_id) : m("–")}</td></tr>`);
-  const reach = [...R.teams].sort((a, b) => a.avg_vs_adp - b.avg_vs_adp).map(r => `<tr${me(r.team_id)}><td>${tn(r.team_id)}</td><td class="n">${sg(r.avg_vs_adp)}</td><td class="n">${r.reaches}</td><td class="n">${sg(r.reach_value)}</td><td>${r.best_reach ? esc(r.best_reach) : ""}</td><td>${r.worst_reach && r.worst_reach !== r.best_reach ? esc(r.worst_reach) : ""}</td><td class="n">${r.bargains}</td><td class="n">${sg(r.bargain_value)}</td></tr>`);
-  const und = R.undrafted.map(u => `<tr${me(u.on_team_id)}><td>${esc(u.name)}</td><td>${u.pos}${u.pos_finish || ""}</td><td class="n">${f1(u.points)}</td><td class="n">${f1(u.over)}</td><td>${u.on_team_id ? tn(u.on_team_id) : m("Free agent")}</td></tr>`);
-  const replTxt = Object.entries(rp).map(([k, v]) => `${k}${v.rank} (${f1(v.points)})`).join(", ");
-  $("draft").innerHTML = `<h2>Draft value</h2>
-    <p class="note">How many points each draft has returned compared with an average draft from the same slots, with every position on one scale. This is the dashboard's own measure, not ESPN's.</p>` +
-    how(` Players are measured in points over replacement: season points minus those of a replacement-level starter at the position, currently ${replTxt}. That is what lets a running back be compared with a receiver or a quarterback. A player below replacement counts as zero, since he would simply be swapped out. A pick's value is its points over replacement minus the average for the picks within half a round either side of it, so a third-overall running back is judged against the receiver taken fifth as much as against other backs. A steal or bust is ${Math.round(R.label_threshold)} points clear of that average either way. Points are season to date, so injuries count against a pick.`) +
-    table([["",1],["Team"],["Value",1,"Sum of every pick's value against its draft slot"],["Over repl.",1,"Total points over replacement from drafted players"],["Best pick"],["Worst pick"],["Steals",1],["Busts",1]], teams) +
+  const R = D.draft, mine = R.picks.filter(p => p.team_id === team), rp = R.replacement, my = R.teams.find(t => t.team_id === team);
+  const went = k => k ? "#" + k : "undrafted";
+  const teams = R.teams.map(g => `<tr${me(g.team_id)}><td class="n m">${g.rank}</td><td>${tn(g.team_id)}</td><td class="n">${pc(g.efficiency)}</td><td class="n">${f1(g.actual)}</td><td class="n">${f1(g.perfect)}</td><td>${esc(g.best.name)} ${m(`#${g.best.pick} · +${f1(g.best.added)}`)}</td><td>${g.miss.name ? `${esc(g.miss.name)} ${m(`instead of ${esc(g.miss.took)} at #${g.miss.pick} · ${f1(g.miss.gap)}`)}` : ""}</td></tr>`);
+  const best = p => !p.graded ? m("not graded") : !p.best ? m("–") : p.best.same ? m("this pick") : `${esc(p.best.name)} ${m(`${p.best.pos} · ${went(p.best.pick)} · +${f1(p.best.add)}`)}`;
+  const picks = mine.map(p => `<tr><td class="n m">${p.pick}</td><td>${esc(p.name)}</td><td>${p.pos}${p.pos_drafted} ${m("→")} ${p.pos_finish ? p.pos + p.pos_finish : "–"}</td><td class="n">${f1(p.points)}</td><td class="n">${p.graded ? "+" + f1(p.added) : m("–")}</td><td>${best(p)}</td><td class="n">${p.graded && p.gap > 0.05 ? f1(p.gap) : ""}</td><td class="n">${p.adp_rank ? "#" + p.adp_rank : m("undrafted")}</td><td class="n">${p.redraft_pick ? "#" + p.redraft_pick : m("–")}</td></tr>`);
+  const perfect = my ? my.perfect_picks.map(q => { const a = mine.find(p => p.pick === q.pick) || {};
+    return `<tr><td class="n m">${q.pick}</td><td>${esc(q.name)} ${m(`${q.pos} · ${went(q.actual_pick)}`)}</td><td class="n">+${f1(q.added)}</td><td>${esc(a.name || "")}</td><td class="n">${a.graded ? "+" + f1(a.added) : m("–")}</td></tr>`; }) : [];
+  const misses = R.misses.map(r => `<tr${me(r.team_id)}><td>${tn(r.team_id)}</td><td>${esc(r.took)} ${m(`${r.took_pos} · #${r.took_pick} · +${f1(r.took_added)}`)}</td><td>${esc(r.name)} ${m(`${r.pos} · ${went(r.pick)} · +${f1(r.add)}`)}</td><td>${r.taken_by ? tn(r.taken_by) : m("nobody")}</td><td class="n">${f1(r.gap)}</td></tr>`);
+  const redraft = R.redraft.slice(0, 36).map(r => `<tr${me(r.team_id)}><td class="n m">${r.redraft_pick}</td><td>${esc(r.name)}</td><td>${r.pos}${r.pos_finish || ""}</td><td class="n">${f1(r.points)}</td><td class="n">+${f1(r.over)}</td><td class="n">${r.actual_pick ? "#" + r.actual_pick : m("undrafted")}</td><td class="n">${r.actual_pick ? (d => d > 0 ? "↑ " + d : d < 0 ? "↓ " + -d : m("–"))(r.actual_pick - r.redraft_pick) : ""}</td><td>${r.team_id ? tn(r.team_id) : m("–")}</td></tr>`);
+  const reach = [...R.teams].sort((a, b) => a.avg_vs_adp - b.avg_vs_adp).map(r => `<tr${me(r.team_id)}><td>${tn(r.team_id)}</td><td class="n">${sg(r.avg_vs_adp)}</td><td class="n">${r.reaches}</td><td class="n">${f1(r.reach_added)}</td><td>${r.best_reach ? esc(r.best_reach) : ""}</td><td>${r.worst_reach && r.worst_reach !== r.best_reach ? esc(r.worst_reach) : ""}</td><td class="n">${r.bargains}</td><td class="n">${f1(r.bargain_added)}</td></tr>`);
+  const und = R.undrafted.map(u => `<tr${me(u.on_team_id)}><td>${esc(u.name)}</td><td>${u.pos}${u.pos_finish || ""}</td><td class="n">${f1(u.points)}</td><td class="n">+${f1(u.over)}</td><td>${u.on_team_id ? tn(u.on_team_id) : m("Free agent")}</td></tr>`);
+  const replTxt = Object.entries(rp).map(([k, v]) => `${k}${v.rank} (${f1(v.weekly)} a week)`).join(", ");
+  $("draft").innerHTML = `<h2>Draft efficiency</h2>
+    <p class="note">What each draft has produced as a share of a perfect draft from the same pick slots, judged by the starting lineups the drafted players could fill. This is the dashboard's own measure, not ESPN's.</p>` +
+    how(` Each week a team's best lineup (QB, 2 RB, 2 WR, TE, FLEX) is built from the players it drafted, with a waiver-level filler in any slot they can't beat. The fillers score the weekly average of the last starter in the league at each position: ${replTxt}. "Added" is the points those lineups score above an all-filler team over ${R.weeks} weeks. A second quarterback only counts in weeks he beats the first, so stockpiling a position earns little. The perfect draft replays the same pick slots, each time taking the player still on the board who would add most to the roster built so far, including players nobody drafted. Kickers and defenses are left out. It grades the roster as drafted, set perfectly each week: trades, drops and injuries after draft day are not adjusted for, and the perfect draft has hindsight nobody had.`) +
+    table([["",1],["Team"],["Efficiency",1],["Added",1,"Points the drafted roster's best lineups score above an all-filler team"],["Perfect",1,"The same, for a perfect draft from this team's pick slots"],["Best pick"],["Biggest miss"]], teams) +
     `<h2>Draft slot vs. season points</h2>
     <div class="row"><label class="ctl">Position <select id="pos">${["All","QB","RB","WR","TE","K","D/ST"].map(p => `<option${p === pos ? " selected" : ""}>${p}</option>`).join("")}</select></label>
       <div class="key"><span><span class="sw" style="--c:var(--accent)"></span>${tn(team)}</span><span><span class="sw" style="--c:var(--other)"></span>Everyone else</span></div></div>
     <div id="chart"></div>
     <h2>${tn(team)}, pick by pick</h2>
-    <p class="note">"Passed over" is the most valuable player at any position taken after this pick but before this team picked again; the gap is in points over replacement. "Consensus" is where ESPN drafters ranked the player, and "Redraft" is where he would go today.</p>` +
-    table([["#",1],["Player"],["Drafted → now"],["Pts",1],["Over repl.",1],["Value",1],["Consensus",1,"Rank by ESPN average draft position"],["Redraft",1],["Passed over"],["Gap",1]], picks) +
-    `<h2>Biggest misses</h2><p class="note">The widest gaps, in points over replacement, between a pick and a player at any position taken before that team picked again.</p>` +
-    table([["Team"],["Took"],["Passed over"],["Went to"],["Gap",1]], regrets) +
-    `<h2>The redraft</h2><p class="note">The first three rounds if the league drafted today, ordered by points over replacement.</p>` +
-    how(` A position's top scorer is not automatically a top pick. A quarterback is measured against QB${rp.QB.rank}, who scores a lot, so even the QB1's margin over replacement can be smaller than that of a top running back or receiver. The arrow shows how far a player rose or fell from where he was actually taken.`) +
-    table([["Redraft",1],["Player"],["Rank"],["Pts",1],["Over repl.",1],["Actual pick",1],["Move",1],["Drafted by"]], redraft) +
+    <p class="note">"Added" is what the pick added to this team's lineups given the players already drafted. "Best on board" is the available player who would have added the most at that moment, wherever he ended up going, and "Missed" is the difference. The same player can be the best on board at several picks in a row.</p>` +
+    table([["#",1],["Player"],["Drafted → now"],["Pts",1],["Added",1],["Best on board"],["Missed",1],["Consensus",1,"Rank by ESPN average draft position"],["Redraft",1]], picks) +
+    `<h2>${tn(team)}, the perfect draft</h2><p class="note">The best possible draft from the same ${perfect.length} pick slots, with the league's other picks unchanged, next to what was actually taken. Each player can only be taken once.</p>` +
+    table([["#",1],["Perfect pick"],["Adds",1],["Actual pick"],["Added",1]], perfect) +
+    `<h2>Biggest misses</h2><p class="note">The widest gaps in the league between a pick and the best player on the board at the time.</p>` +
+    table([["Team"],["Took"],["Best on board"],["Went to"],["Missed",1]], misses) +
+    `<h2>The redraft</h2><p class="note">The first three rounds if the league drafted today, ordered by what each player would add to a team of fillers.</p>` +
+    how(` A position's top scorer is not automatically a top pick. A filler quarterback scores ${f1(rp.QB.weekly)} a week, far more than a filler at any other position, so even the QB1 adds less than a top running back or receiver. The arrow shows how far a player rose or fell from where he was actually taken.`) +
+    table([["Redraft",1],["Player"],["Rank"],["Pts",1],["Adds",1],["Actual pick",1],["Move",1],["Drafted by"]], redraft) +
     `<h2>Reaches and bargains</h2><p class="note">Picks against the consensus order. A reach went at least a round earlier than consensus, a bargain a round later.</p>` +
-    how(` ESPN's average draft position comes mostly from smaller leagues, so the raw number is not comparable with a pick in a 12-team draft. Instead players are ranked by ADP and that rank is compared with the pick: the player with the 30th-best ADP "should" go 30th in any league. "Avg. vs consensus" is the average of pick minus consensus rank, negative meaning the manager drafts players earlier than the public does. "Paid off" is the average value of those picks.`) +
-    table([["Team"],["Avg. vs consensus",1],["Reaches",1],["Paid off",1],["Best reach"],["Worst reach"],["Bargains",1],["Paid off",1]], reach) +
-    `<h2>Best undrafted players</h2>` + table([["Player"],["Rank"],["Pts",1],["Over repl.",1],["Now with"]], und);
+    how(` ESPN's average draft position comes mostly from smaller leagues, so the raw number is not comparable with a pick in a 12-team draft. Instead players are ranked by ADP and that rank is compared with the pick: the player with the 30th-best ADP "should" go 30th in any league. "Avg. vs consensus" is the average of pick minus consensus rank, negative meaning the manager drafts players earlier than the public does. "Avg. added" is what those picks added to the team's lineups on average. Kickers and defenses are not counted.`) +
+    table([["Team"],["Avg. vs consensus",1],["Reaches",1],["Avg. added",1],["Best reach"],["Worst reach"],["Bargains",1],["Avg. added",1]], reach) +
+    `<h2>Best undrafted players</h2>` + table([["Player"],["Rank"],["Pts",1],["Adds",1],["Now with"]], und);
   $("pos").onchange = e => { pos = e.target.value; const y = scrollY; rDraft(); scrollTo(0, y); };
   chart();
 }
@@ -353,6 +358,11 @@ function rHistory() {
     const r = (H.h2h[a.key] || {})[b.key]; if (!r) return `<td class="c m">–</td>`; const d = r[0] - r[1];
     return `<td class="c" data-tip="${esc(a.name + " vs " + b.name)}" style="${d ? `background:rgba(var(--${d > 0 ? "pos" : "neg"}),${Math.min(0.4, Math.abs(d) * 0.09)})` : ""}">${r[0]}–${r[1]}</td>`; }).join("") + "</tr>");
   const game = (rows, fmt) => table([["Team"],["Season"],["Wk",1],["Score",1],["Against"]], rows.map(g => `<tr${me((ms.find(z => z.key === g.key) || {}).team_id)}><td>${esc(g.team)} ${m(esc(name(g.key) !== g.team ? name(g.key) : ""))}</td><td>${g.season}${g.playoff ? " " + m("playoffs") : ""}</td><td class="n">${g.week}</td><td class="n">${fmt(g)}</td><td>${esc(g.opp_team)} ${m(f1(g.opp_points))}</td></tr>`));
+  const DR = H.drafting, ord = r => r + (r === 1 ? "st" : r === 2 ? "nd" : r === 3 ? "rd" : "th");
+  const drRows = DR.rows.map(r => `<tr${me(r.team_id)}><td>${who(r)}</td>${DR.seasons.map(y => { const v = r.by_season[y]; return `<td class="n" title="${v ? esc(f1(v.actual) + " of a possible " + f1(v.perfect)) : ""}">${v ? `${v.rank === 1 ? "<b>" + pc(v.efficiency) + "</b>" : pc(v.efficiency)} ${m(ord(v.rank))}` : m("–")}</td>`; }).join("")}<td class="n">${r.avg_rank.toFixed(1)}</td><td class="n">${ord(r.best_rank)} ${m("/")} ${ord(r.worst_rank)}</td><td class="n">${pc(r.finished_efficiency)}</td></tr>`);
+  const mgr = x => `<tr${me((ms.find(z => z.key === x.key) || {}).team_id)}><td>${esc(name(x.key) || x.team)}</td>`;
+  const bestPicks = table([["Manager"],["Pick"],["Season"],["Added",1]], DR.best_picks.map(x => `${mgr(x)}<td>${esc(x.name)} ${m(`${x.pos} · #${x.pick}`)}</td><td>${x.season}</td><td class="n">+${f1(x.added)}</td></tr>`));
+  const worstPicks = table([["Manager"],["Took"],["Season"],["Best on board"],["Missed",1]], DR.worst_picks.map(x => `${mgr(x)}<td>${esc(x.name)} ${m(`${x.pos} · #${x.pick}`)}</td><td>${x.season}</td><td>${esc(x.best || "")} ${m(x.best_pos)}</td><td class="n">${f1(x.gap)}</td></tr>`));
   const tend = H.tendencies.map(t => { const e = Object.entries(t.early).sort((a, b) => b[1] - a[1]).map(([p, c]) => `${p} ${c}`).join(" · ");
     return `<tr${me(t.team_id)}><td>${who(t)}</td><td class="n">${t.drafts}</td><td>${e}</td><td class="n">${f1(t.first_qb)}</td><td class="n">${f1(t.first_te)}</td></tr>`; });
   const when = f => f.picks.map(x => `${x.season} R${x.round}`).join(", ");
@@ -363,6 +373,10 @@ function rHistory() {
   $("history").innerHTML = `<h2>All-time</h2>
     <p class="note">Finished seasons on ESPN, ${H.seasons[0]}–${H.seasons[H.seasons.length - 1]}, by manager under this year's team name. Records are regular season.</p>` +
     table([["Manager"],["Record",2],["Win %",1],["Pts / game",1],["Titles",1],["Playoffs",1], ...H.seasons.map(s => [s, 2]),["Avg. finish",1]], all) +
+    `<h2>Drafting, season by season</h2><p class="note">Draft efficiency for every draft on record, with that season's rank among the 12 teams, ordered by average rank. Finished seasons use the full year; ${DR.current} is to date. Hover a cell for the points behind it.</p>` +
+    how(` Same measure as the Draft tab: the points a team's drafted players add to its best weekly lineups over waiver-level fillers, as a share of a perfect draft from the same pick slots. Filler levels are worked out separately for each season. "Finished seasons" pools the completed years.`) +
+    table([["Manager"], ...DR.seasons.map(y => [y === DR.current ? y + " so far" : y, 1]), ["Avg. rank",1], ["Best / worst",1], ["Finished seasons",1]], drRows) +
+    `<div class="two"><div><h2>Best picks, ${DR.seasons[0]}–${DR.seasons[DR.seasons.length - 2]}</h2>${bestPicks}</div><div><h2>Biggest misses</h2>${worstPicks}</div></div>` +
     `<h2>Head to head</h2><p class="note">Row team's record against column team, regular season and playoff bracket games, including this season so far.</p>` +
     `<div id="h2h" class="matrix">${table([[""], ...order.map(b => [esc((D.teams[b.team_id] || {}).abbrev || ""), 2, b.name])], h2h)}</div>` +
     `<div class="two"><div><h2>Highest scores</h2>${game(H.records.high, g => f1(g.points))}</div><div><h2>Lowest scores</h2>${game(H.records.low, g => f1(g.points))}</div>

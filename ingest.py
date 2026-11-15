@@ -73,6 +73,14 @@ CREATE TABLE history_games (
     season INTEGER, week INTEGER, tier TEXT,
     home_team_id INTEGER, home_points REAL, away_team_id INTEGER, away_points REAL
 );
+CREATE TABLE player_weeks (
+    season INTEGER, player_id INTEGER, week INTEGER, points REAL,
+    PRIMARY KEY (season, player_id, week)
+);
+CREATE TABLE history_players (
+    season INTEGER, player_id INTEGER, name TEXT, position_id INTEGER, points REAL,
+    PRIMARY KEY (season, player_id)
+);
 CREATE TABLE history_picks (
     season INTEGER, overall_pick INTEGER, round INTEGER, team_id INTEGER, player_id INTEGER
 );
@@ -110,6 +118,12 @@ def _upsert_player(conn: sqlite3.Connection, p: Dict[str, Any]) -> None:
         p["id"], p["name"], p.get("positionId"), p.get("proTeamId"),
         p.get("onTeamId"), p.get("status"), p.get("seasonPoints"),
         p.get("seasonAvg"), p.get("adp"), p.get("pctOwned")))
+
+
+def _load_weeks(conn: sqlite3.Connection, season: int, p: Dict[str, Any]) -> None:
+    for week, pts in (p.get("weekly") or {}).items():
+        conn.execute("INSERT OR REPLACE INTO player_weeks VALUES (?,?,?,?)",
+                     (season, p["id"], int(week), pts))
 
 
 def ingest(client: Any, db_path: Path = DB_PATH, refresh: bool = False,
@@ -227,11 +241,21 @@ def ingest(client: Any, db_path: Path = DB_PATH, refresh: bool = False,
             wanted.add(p["playerId"])
             conn.execute("INSERT INTO history_picks VALUES (?,?,?,?,?)", (
                 h["season"], p["overall"], p["round"], p["teamId"], p["playerId"]))
+        try:  # that season's final point totals, for grading its draft
+            for p in client.players_season(int(year)):
+                if p.get("seasonPoints") is not None:
+                    conn.execute("INSERT OR REPLACE INTO history_players VALUES (?,?,?,?,?)", (
+                        h["season"], p["id"], p["name"], p.get("positionId"),
+                        p["seasonPoints"]))
+                _load_weeks(conn, h["season"], p)
+        except EspnError:
+            pass
 
     # Season totals: top scorers league-wide, plus anyone else we reference.
     top = client.players_top(refresh=refresh or slow)
     for p in top:
         _upsert_player(conn, p)
+        _load_weeks(conn, int(league.get("seasonId") or 0), p)
     wanted.update(r[0] for r in conn.execute("SELECT player_id FROM players"))
     wanted -= {p["id"] for p in top}
     wanted.discard(None)

@@ -27,7 +27,7 @@ FULL_EVERY = 4 * 3600  # seconds
 def main() -> int:
     try:
         client = EspnClient.from_env()
-        marker = client.cache_dir / "players_top.json"
+        marker = client.cache_dir / "players_weekly.json"
         fresh = marker.exists() and time.time() - marker.stat().st_mtime < FULL_EVERY
         ingest.ingest(client, light=fresh)
     except EspnError as e:

@@ -65,7 +65,12 @@ def data() -> Dict[str, Any]:
         pull(light=False)
         if not ingest.DB_PATH.exists():
             return {"error": _state["error"] or "No data yet."}
-    d = load()
+    try:
+        d = load()
+    except sqlite3.OperationalError:
+        # The database predates a schema change: rebuild it from the cache.
+        pull(light=True)
+        d = load()
     age = time.time() - max(_state["last_pull"], d["ingested_at"] / 1000.0)
     live = d["live"]["games_in_progress"]
     if (live and age > LIVE_INTERVAL) or age > IDLE_INTERVAL:
