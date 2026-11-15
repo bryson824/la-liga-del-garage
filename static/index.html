@@ -196,7 +196,7 @@ function rLive(open) {
     <p class="note"><span class="dot playing"></span>playing now &nbsp; <span class="dot upcoming"></span>yet to play &nbsp; <span class="dot done"></span>finished. Scores are as of the last update${L.games_in_progress ? (STATIC ? " and refresh every few minutes while games are on" : " and refresh every minute while games are on") : ""}.</p>
     <div class="games">` + gs.map(g => { const k = (g.home || {}).team_id;
       return `<div class="game${mine(g) ? " mine" : ""}">${side(g.home)}${side(g.away)}
-      <details data-k="${k}"${open.has(String(k)) || (!open.size && mine(g)) ? " open" : ""}><summary>Lineups</summary><div class="scroll">${compare(g)}</div></details></div>`; }).join("") + "</div>";
+      <details data-k="${k}"${open.has(String(k)) ? " open" : ""}><summary>Lineups</summary><div class="scroll">${compare(g)}</div></details></div>`; }).join("") + "</div>";
 }
 
 function rStandings() {
