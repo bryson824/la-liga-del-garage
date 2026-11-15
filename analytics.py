@@ -5,8 +5,6 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
-from draftmodel import DraftModel
-
 BENCH, IR, FLEX = 20, 21, 23
 
 # lineup slot id -> player position ids allowed in it
@@ -294,46 +292,92 @@ def schedule_swap(conn: sqlite3.Connection, through_week: Optional[int] = None
     return out
 
 
-_PAST_MODELS: Dict[int, DraftModel] = {}
+SKILL_SLOT = {1: 0, 2: 2, 3: 4, 4: 6}  # QB, RB, WR, TE -> their lineup slot
+_PAST_SEASONS: Dict[int, Dict[str, Any]] = {}
 
 
-def _model(conn: sqlite3.Connection, season: int, through_week: Optional[int] = None
-           ) -> DraftModel:
-    """Draft model for the current season (through a week) or a finished one."""
+def _season_values(conn: sqlite3.Connection, season: int, through_week: Optional[int] = None
+                   ) -> Dict[str, Any]:
+    """Points over replacement for every QB, RB, WR and TE in a season.
+
+    The standard value-based measure: a player's season points minus those of
+    the replacement-level player at his position, the last starter league-wide
+    (QB12, RB30, WR30, TE12 in a 12-team league with this lineup). Kickers and
+    defenses are left out.
+    """
     current = int(_meta(conn, "season") or 0)
-    if season != current and season in _PAST_MODELS:
-        return _PAST_MODELS[season]
-    weekly: Dict[int, Dict[int, float]] = {}
-    for pid, week, pts in conn.execute(
-            "SELECT player_id, week, points FROM player_weeks WHERE season=?", (season,)):
-        weekly.setdefault(pid, {})[week] = pts
+    if season != current and season in _PAST_SEASONS:
+        return _PAST_SEASONS[season]
     if season == current:
+        last = through_week or last_completed_week(conn)
         position = dict(conn.execute("SELECT player_id, position_id FROM players"))
-        picks = conn.execute(
-            "SELECT overall_pick, team_id, player_id FROM draft_picks").fetchall()
-        weeks = range(1, (through_week or last_completed_week(conn)) + 1)
+        picks = conn.execute("SELECT overall_pick, team_id, player_id FROM draft_picks "
+                             "ORDER BY overall_pick").fetchall()
     else:
+        last = 17  # the fantasy season: regular season plus playoffs
         position = dict(conn.execute(
             "SELECT player_id, position_id FROM history_players WHERE season=?", (season,)))
-        picks = conn.execute(
-            "SELECT overall_pick, team_id, player_id FROM history_picks WHERE season=?",
-            (season,)).fetchall()
-        weeks = range(1, 18)  # the fantasy season, regular season plus playoffs
+        picks = conn.execute("SELECT overall_pick, team_id, player_id FROM history_picks "
+                             "WHERE season=? ORDER BY overall_pick", (season,)).fetchall()
+    points = {pid: pts for pid, pts in conn.execute(
+        "SELECT player_id, SUM(points) FROM player_weeks WHERE season=? AND week BETWEEN 1 AND ? "
+        "GROUP BY player_id", (season, last)) if position.get(pid) in SKILL_SLOT}
+    slots = starting_slots(conn)
     n_teams = len({t for _, t, _ in picks}) or 12
-    model = DraftModel(weekly, position, picks, starting_slots(conn), n_teams, weeks)
+    repl: Dict[int, float] = {}
+    repl_rank: Dict[int, int] = {}
+    for pos, slot in SKILL_SLOT.items():
+        n = n_teams * slots.get(slot, 0) + (n_teams * slots.get(FLEX, 0) // 2 if pos in (2, 3) else 0)
+        ranked = sorted((v for pid, v in points.items() if position[pid] == pos), reverse=True)
+        repl_rank[pos] = n
+        repl[pos] = ranked[min(n, len(ranked)) - 1] if ranked and n else 0.0
+    out = {"season": season, "weeks": last, "picks": picks, "points": points,
+           "position": position, "repl": repl, "repl_rank": repl_rank, "n_teams": n_teams,
+           "raw": {pid: v - repl[position[pid]] for pid, v in points.items()}}
+    out["graded"] = {pid for _, _, pid in picks if position.get(pid) in SKILL_SLOT}
     if season != current:
-        _PAST_MODELS[season] = model
-    return model
+        _PAST_SEASONS[season] = out
+    return out
+
+
+def _over(sv: Dict[str, Any], pid: int) -> float:
+    """Points over replacement, floored at zero (a dud is simply replaced)."""
+    return max(0.0, sv["raw"].get(pid, 0.0))
+
+
+def _slot_curve(conn: sqlite3.Connection, through_week: Optional[int] = None) -> List[float]:
+    """Expected points over replacement per week for each draft slot.
+
+    The average return of the picks within six spots of a slot, across every
+    draft on record. Index 0 is unused; index n is pick n.
+    """
+    current = int(_meta(conn, "season") or 0)
+    seasons = [r[0] for r in conn.execute("SELECT DISTINCT season FROM history_players")]
+    samples: Dict[int, List[float]] = {}
+    top = 0
+    for yr in seasons + [current]:
+        sv = _season_values(conn, yr, through_week)
+        for overall, _, pid in sv["picks"]:
+            top = max(top, overall)
+            if pid in sv["graded"]:
+                samples.setdefault(overall, []).append(_over(sv, pid) / max(1, sv["weeks"]))
+    curve = [0.0] * (top + 1)
+    for n in range(1, top + 1):
+        near = [v for k in range(n - 6, n + 7) for v in samples.get(k, [])]
+        curve[n] = sum(near) / len(near) if near else 0.0
+    return curve
 
 
 def draft_analysis(conn: sqlite3.Connection, through_week: Optional[int] = None
                    ) -> Dict[str, Any]:
-    """This season's draft, graded by the lineups it produced (see draftmodel.py)."""
+    """This season's draft by points over replacement, overall and against
+    what each draft slot usually returns."""
     through_week = through_week or last_completed_week(conn)
     season = int(_meta(conn, "season") or 0)
     players = _players(conn)
-    model = _model(conn, season, through_week)
-    n_teams = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0] or 12
+    sv = _season_values(conn, season, through_week)
+    curve = _slot_curve(conn, through_week)
+    n_teams, weeks = sv["n_teams"], sv["weeks"]
 
     by_pos: Dict[int, List[Dict[str, Any]]] = {}
     for p in players.values():
@@ -356,87 +400,95 @@ def draft_analysis(conn: sqlite3.Connection, through_week: Optional[int] = None
     real_adp = sorted((p for p in players.values() if p["adp"] and 0 < p["adp"] < 165),
                       key=lambda p: p["adp"])
     adp_rank = {p["player_id"]: i + 1 for i, p in enumerate(real_adp)}
-    # Redraft order: what each player adds to an otherwise all-filler team.
-    redraft_pick = {pid: i + 1 for i, pid in enumerate(model.candidates)}
+    board = sorted(sv["raw"], key=lambda pid: -sv["raw"][pid])
+    redraft_pick = {pid: i + 1 for i, pid in enumerate(board)}
 
-    meta = {r[0]: r[1] for r in conn.execute("SELECT overall_pick, round FROM draft_picks")}
+    rounds = dict(conn.execute("SELECT overall_pick, round FROM draft_picks"))
+    threshold = 4.0 * max(1, weeks)
     picks = []
     drafted_order: Dict[str, int] = {}
-    for row in model.pick_rows:
-        pid = row["player_id"]
+    for overall, team_id, pid in sv["picks"]:
         pos = ps(pid)
         drafted_order[pos] = drafted_order.get(pos, 0) + 1
+        graded = pid in sv["graded"]
+        over = _over(sv, pid) if graded else None
+        expected = curve[overall] * weeks if graded else None
+        vs_slot = over - expected if graded else None
         rank = adp_rank.get(pid)
-        vs_adp = (row["pick"] - rank if rank is not None
-                  else min(0, row["pick"] - (len(real_adp) + 1)))
-        best = row["best_id"]
         picks.append({
-            "pick": row["pick"], "round": meta.get(row["pick"]), "team_id": row["team_id"],
+            "pick": overall, "round": rounds.get(overall), "team_id": team_id,
             "player_id": pid, "name": nm(pid), "pos": pos,
             "pos_drafted": drafted_order[pos], "pos_finish": finish.get(pid),
-            "points": (players.get(pid) or {}).get("season_points") or 0.0,
-            "graded": row["graded"], "added": row["added"], "gap": row["gap"],
-            "best": best and {"name": nm(best), "pos": ps(best), "add": row["best_add"],
-                              "pick": model.pick_of.get(best),
-                              "team_id": next((t for o, t, p in model.picks if p == best), None),
-                              "same": best == pid},
-            "redraft_pick": redraft_pick.get(pid) if row["graded"] else None,
-            "adp_rank": rank, "vs_adp": vs_adp})
+            "points": sv["points"].get(pid, (players.get(pid) or {}).get("season_points") or 0.0),
+            "graded": graded, "over": over, "expected": expected, "vs_slot": vs_slot,
+            "label": ("" if not graded else "steal" if vs_slot >= threshold
+                      else "bust" if vs_slot <= -threshold else ""),
+            "redraft_pick": redraft_pick.get(pid) if graded else None,
+            "adp_rank": rank,
+            "vs_adp": (overall - rank if rank is not None
+                       else min(0, overall - (len(real_adp) + 1)))})
 
+    # Passed over: the best player, any position, taken before this team's next
+    # turn. Back-to-back picks share the window after the pair.
     by_team: Dict[int, List[Dict[str, Any]]] = {}
     for pk in picks:
         by_team.setdefault(pk["team_id"], []).append(pk)
+    for pk in picks:
+        own = sorted(o["pick"] for o in by_team[pk["team_id"]])
+        start = pk["pick"]
+        while start + 1 in own:
+            start += 1
+        later = [o for o in own if o > start]
+        end = later[0] if later else 10 ** 6
+        window = [o for o in picks if start < o["pick"] < end and o["graded"]
+                  and pk["graded"] and o["over"] > pk["over"]]
+        best = max(window, key=lambda o: o["over"]) if window else None
+        pk["passed"] = best and {"name": best["name"], "pos": best["pos"], "pick": best["pick"],
+                                 "team_id": best["team_id"], "over": best["over"],
+                                 "gap": best["over"] - pk["over"]}
+
     teams = []
     for t, tp in by_team.items():
-        mt = model.teams[t]
-        rs = [p for p in tp if p["vs_adp"] <= -n_teams and p["graded"]]
-        bs = [p for p in tp if p["vs_adp"] >= n_teams and p["graded"]]
         graded = [p for p in tp if p["graded"]]
-        best = max(graded, key=lambda p: p["added"])
-        miss = max(graded, key=lambda p: p["gap"] or 0.0)
+        rs = [p for p in graded if p["vs_adp"] <= -n_teams]
+        bs = [p for p in graded if p["vs_adp"] >= n_teams]
+        best = max(graded, key=lambda p: p["vs_slot"])
+        worst = min(graded, key=lambda p: p["vs_slot"])
         teams.append({
-            "team_id": t, "actual": mt["actual"], "perfect": mt["perfect"],
-            "efficiency": mt["efficiency"],
-            "best": {"name": best["name"], "pick": best["pick"], "added": best["added"]},
-            "miss": {"took": miss["name"], "pick": miss["pick"], "gap": miss["gap"],
-                     "name": (miss["best"] or {}).get("name")},
-            "perfect_picks": [{"pick": pp["pick"], "name": nm(pp["player_id"]),
-                               "pos": ps(pp["player_id"]), "added": pp["added"],
-                               "actual_pick": model.pick_of.get(pp["player_id"])}
-                              for pp in mt["perfect_picks"]],
+            "team_id": t, "value": sum(p["over"] for p in graded),
+            "vs_slot": sum(p["vs_slot"] for p in graded),
+            "steals": sum(1 for p in graded if p["label"] == "steal"),
+            "busts": sum(1 for p in graded if p["label"] == "bust"),
+            "best": {"name": best["name"], "pick": best["pick"], "vs_slot": best["vs_slot"]},
+            "worst": {"name": worst["name"], "pick": worst["pick"], "vs_slot": worst["vs_slot"]},
             "avg_vs_adp": sum(p["vs_adp"] for p in tp) / len(tp),
             "reaches": len(rs), "bargains": len(bs),
-            "reach_added": sum(p["added"] for p in rs) / len(rs) if rs else None,
-            "bargain_added": sum(p["added"] for p in bs) / len(bs) if bs else None,
-            "best_reach": max(rs, key=lambda p: p["added"])["name"] if rs else None,
-            "worst_reach": min(rs, key=lambda p: p["added"])["name"] if rs else None})
-    teams.sort(key=lambda t: -(t["efficiency"] or 0))
+            "reach_value": sum(p["vs_slot"] for p in rs) / len(rs) if rs else None,
+            "bargain_value": sum(p["vs_slot"] for p in bs) / len(bs) if bs else None,
+            "best_reach": max(rs, key=lambda p: p["vs_slot"])["name"] if rs else None,
+            "worst_reach": min(rs, key=lambda p: p["vs_slot"])["name"] if rs else None})
+    teams.sort(key=lambda t: -t["value"])
     for i, t in enumerate(teams):
         t["rank"] = i + 1
 
     drafted = {pk["player_id"]: pk for pk in picks}
     redraft = [{"redraft_pick": i + 1, "name": nm(pid), "pos": ps(pid),
-                "pos_finish": finish.get(pid),
-                "points": (players.get(pid) or {}).get("season_points"),
-                "over": model.surplus[pid],
+                "pos_finish": finish.get(pid), "points": sv["points"][pid],
+                "over": sv["raw"][pid],
                 "actual_pick": (drafted.get(pid) or {}).get("pick"),
                 "team_id": (drafted.get(pid) or {}).get("team_id")}
-               for i, pid in enumerate(model.candidates[:len(picks)])]
-    misses = sorted((p for p in picks if p["gap"] and not p["best"]["same"]),
-                    key=lambda p: -p["gap"])[:20]
-    undrafted = [pid for pid in model.candidates if pid not in drafted][:15]
-    return {"picks": picks, "teams": teams, "redraft": redraft,
-            "misses": [{"team_id": p["team_id"], "took": p["name"], "took_pos": p["pos"],
-                        "took_pick": p["pick"], "took_added": p["added"],
-                        "name": p["best"]["name"], "pos": p["best"]["pos"],
-                        "pick": p["best"]["pick"], "add": p["best"]["add"],
-                        "taken_by": p["best"]["team_id"], "gap": p["gap"]} for p in misses],
-            "replacement": {POS[k]: {"rank": model.repl_rank[k], "weekly": v}
-                            for k, v in model.repl.items()},
-            "weeks": len(model.weeks),
-            "undrafted": [{"name": nm(pid), "pos": ps(pid),
-                           "points": (players.get(pid) or {}).get("season_points"),
-                           "over": model.surplus[pid],
+               for i, pid in enumerate(board[:len(picks)])]
+    misses = sorted((dict(pk["passed"], team_id=pk["team_id"], took=pk["name"],
+                          took_pos=pk["pos"], took_pick=pk["pick"], took_over=pk["over"],
+                          taken_by=pk["passed"]["team_id"])
+                     for pk in picks if pk["passed"]), key=lambda r: -r["gap"])[:20]
+    undrafted = [pid for pid in board if pid not in drafted and sv["raw"][pid] > 0][:15]
+    return {"picks": picks, "teams": teams, "redraft": redraft, "misses": misses,
+            "replacement": {POS[k]: {"rank": sv["repl_rank"][k], "points": v}
+                            for k, v in sv["repl"].items()},
+            "weeks": weeks, "label_threshold": threshold,
+            "undrafted": [{"name": nm(pid), "pos": ps(pid), "points": sv["points"][pid],
+                           "over": sv["raw"][pid],
                            "on_team_id": (players.get(pid) or {}).get("on_team_id"),
                            "pos_finish": finish.get(pid)} for pid in undrafted]}
 
@@ -745,36 +797,36 @@ def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dic
         tendencies.append(dict(label(o), drafts=len(t["drafts"]), early=t["early"],
                                favorites=favs,
                                first_qb=avg(t["first_qb"]), first_te=avg(t["first_te"])))
-    # Draft efficiency season by season (finished seasons use the full year).
+    # Draft value season by season (finished seasons use the full year).
+    curve = _slot_curve(conn, through_week)
     draft_by: Dict[str, Dict[int, Dict[str, Any]]] = {}
     all_picks: List[Dict[str, Any]] = []
     past = sorted({r[0] for r in conn.execute("SELECT DISTINCT season FROM history_players")})
     for yr in past + [season]:
-        model = _model(conn, yr, through_week)
-        ranked = sorted(model.teams, key=lambda t: -(model.teams[t]["efficiency"] or 0))
-        for rank, tid in enumerate(ranked):
+        sv = _season_values(conn, yr, through_week)
+        totals: Dict[int, List[float]] = {}
+        info = {} if yr == season else {pid: (name, p) for pid, name, p in conn.execute(
+            "SELECT player_id, name, position_id FROM history_players WHERE season=?", (yr,))}
+        for overall, tid, pid in sv["picks"]:
+            if pid not in sv["graded"]:
+                continue
+            over = _over(sv, pid)
+            vs = over - curve[overall] * sv["weeks"]
+            tot = totals.setdefault(tid, [0.0, 0.0])
+            tot[0] += over
+            tot[1] += vs
+            o = owner_of.get((yr, tid))
+            if o and yr != season:
+                nm_, p_ = info.get(pid) or (pname.get(pid), None)
+                all_picks.append({"owner": o, "season": yr, "pick": overall,
+                                  "name": nm_ or "Player %s" % pid, "pos": POS.get(p_, "?"),
+                                  "over": over, "vs_slot": vs,
+                                  "team": team_name.get((yr, tid))})
+        for rank, tid in enumerate(sorted(totals, key=lambda t: -totals[t][0])):
             o = owner_of.get((yr, tid))
             if o:
-                mt = model.teams[tid]
-                draft_by.setdefault(o, {})[yr] = {
-                    "efficiency": mt["efficiency"], "actual": mt["actual"],
-                    "perfect": mt["perfect"], "rank": rank + 1}
-        if yr == season:
-            continue
-        info = {pid: (name, p) for pid, name, p in conn.execute(
-            "SELECT player_id, name, position_id FROM history_players WHERE season=?", (yr,))}
-        for row in model.pick_rows:
-            o = owner_of.get((yr, row["team_id"]))
-            if not o or not row["graded"]:
-                continue
-            nm_, p_ = info.get(row["player_id"]) or (pname.get(row["player_id"]), None)
-            bn, bp = info.get(row["best_id"]) or (None, None)
-            all_picks.append({"owner": o, "season": yr, "pick": row["pick"],
-                              "name": nm_ or "Player %s" % row["player_id"],
-                              "pos": POS.get(p_, "?"), "added": row["added"],
-                              "gap": row["gap"] or 0.0, "best": bn, "best_pos": POS.get(bp, "?"),
-                              "best_add": row["best_add"],
-                              "team": team_name.get((yr, row["team_id"]))})
+                draft_by.setdefault(o, {})[yr] = {"value": totals[tid][0],
+                                                  "vs_slot": totals[tid][1], "rank": rank + 1}
     draft_rows = []
     for o, by in draft_by.items():
         ranks = [v["rank"] for v in by.values()]
@@ -782,12 +834,12 @@ def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dic
         draft_rows.append(dict(
             label(o), by_season=by, drafts=len(by), avg_rank=sum(ranks) / len(ranks),
             best_rank=min(ranks), worst_rank=max(ranks),
-            finished_efficiency=(sum(v["actual"] for v in done) / sum(v["perfect"] for v in done)
-                                 if done and sum(v["perfect"] for v in done) else None)))
+            finished_value=sum(v["value"] for v in done) if done else None,
+            finished_vs_slot=sum(v["vs_slot"] for v in done) if done else None))
     draft_rows.sort(key=lambda r: r["avg_rank"])
     drafting = {"seasons": past + [season], "current": season, "rows": draft_rows,
-                "best_picks": [dict(p) for p in sorted(all_picks, key=lambda p: -p["added"])[:10]],
-                "worst_picks": [dict(p) for p in sorted(all_picks, key=lambda p: -p["gap"])[:10]]}
+                "best_picks": [dict(p) for p in sorted(all_picks, key=lambda p: -p["vs_slot"])[:10]],
+                "worst_picks": [dict(p) for p in sorted(all_picks, key=lambda p: p["vs_slot"])[:10]]}
 
     seasons = sorted({s for s, _ in owner_of if s != season})
     managers = sorted(mgr.values(), key=lambda m: (-(m["titles"]), -(m["win_pct"] or 0)))
