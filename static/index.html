@@ -47,6 +47,7 @@ h2 { font: 600 19px/1.25 var(--serif); margin: 44px 0 4px; } section > h2:first-
 .note { color: var(--ink2); font-size: 13px; margin: 0 0 12px; max-width: 72ch; }
 details.how { color: var(--ink2); font-size: 13px; margin: -6px 0 12px; max-width: 72ch; }
 details.how summary { cursor: pointer; color: var(--ink3); }
+details.how ul { margin: 8px 0; padding-left: 18px; } details.how li { margin: 3px 0; } details.how b { color: var(--ink); font-weight: 600; }
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 thead th { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
@@ -268,6 +269,18 @@ function rDraft() {
   const redraft = R.redraft.slice(0, 36).map(r => `<tr${me(r.team_id)}><td class="n m">${r.redraft_pick}</td><td>${esc(r.name)}</td><td>${r.pos}${r.pos_finish || ""}</td><td class="n">${f1(r.points)}</td><td class="n">${f1(r.over)}</td><td class="n">${r.actual_pick ? "#" + r.actual_pick : m("undrafted")}</td><td class="n">${r.actual_pick ? (d => d > 0 ? "↑ " + d : d < 0 ? "↓ " + -d : m("–"))(r.actual_pick - r.redraft_pick) : ""}</td><td>${r.team_id ? tn(r.team_id) : m("–")}</td></tr>`);
   const reach = [...R.teams].sort((a, b) => a.avg_vs_adp - b.avg_vs_adp).map(r => `<tr${me(r.team_id)}><td>${tn(r.team_id)}</td><td class="n">${sg(r.avg_vs_adp)}</td><td class="n">${r.reaches}</td><td class="n">${sg(r.reach_value)}</td><td>${r.best_reach ? esc(r.best_reach) : ""}</td><td>${r.worst_reach && r.worst_reach !== r.best_reach ? esc(r.worst_reach) : ""}</td><td class="n">${r.bargains}</td><td class="n">${sg(r.bargain_value)}</td></tr>`);
   const und = R.undrafted.map(u => `<tr${me(u.on_team_id)}><td>${esc(u.name)}</td><td>${u.pos}${u.pos_finish || ""}</td><td class="n">${f1(u.points)}</td><td class="n">${f1(u.over)}</td><td>${u.on_team_id ? tn(u.on_team_id) : m("Free agent")}</td></tr>`);
+  const replTxt0 = Object.entries(rp).map(([k, v]) => `${k}${v.rank}`).join(", ");
+  const ex = mine.find(p => p.passed && p.wait) || mine.find(p => p.graded), exr = ex && rp[ex.pos];
+  const pickHow = !ex ? "" : ` Worked through for ${esc(ex.name)}, pick ${ex.pick}:<ul>
+    <li><b>Drafted → now.</b> He was the ${ex.pos}${ex.pos_drafted} off the board and is now ${ex.pos_finish ? ex.pos + ex.pos_finish : "unranked"} by points.</li>
+    <li><b>Pts.</b> His fantasy points in weeks 1 to ${R.weeks}: ${f1(ex.points)}.</li>
+    <li><b>Over repl.</b> His points minus the replacement-level ${ex.pos}'s. ${ex.pos}${exr.rank} has ${f1(exr.points)}, so ${f1(ex.points)} − ${f1(exr.points)} = ${f1(ex.points - exr.points)}${ex.points < exr.points ? ", which counts as 0.0 because he would simply be swapped out" : ""}.</li>
+    <li><b>Vs. slot.</b> His over-replacement minus what a pick around ${ex.pick} usually returns, which is ${f1(ex.expected)} across this league's four drafts: ${f1(ex.over)} − ${f1(ex.expected)} = ${sg(ex.vs_slot)}.</li>
+    ${ex.passed ? `<li><b>Passed over.</b> The player with the highest over-replacement, at any position, taken after this pick and before this team's next one: ${esc(ex.passed.name)}, who is ${f1(ex.passed.over)} over replacement.</li>
+    <li><b>Gap.</b> His over-replacement minus this pick's: ${f1(ex.passed.over)} − ${f1(ex.over)} = +${f1(ex.passed.gap)}. It is what was given up by making this pick, and only appears when someone better was there.</li>` : ""}
+    ${ex.wait ? `<li><b>Could have waited for.</b> The ${ex.pos} with the highest over-replacement who was still on the board at this team's next pick, whether drafted later or never: ${esc(ex.wait.name)}, who is ${f1(ex.wait.over)} over replacement.</li>
+    <li><b>Edge.</b> This pick's over-replacement minus his: ${f1(ex.over)} − ${f1(ex.wait.over)} = ${sg(ex.wait.edge)}. Positive means the pick beat the fallback; negative means the fallback was better.</li>` : ""}
+    </ul>Gap and edge answer different questions. Gap looks at any position but only at players who would have been gone by the next turn. Edge looks at the same position and only at players who would still have been there. A large gap with an edge near zero means the position was taken too early; a large negative edge means a better player at that position was available later. The same player can be listed against several picks, but could only have been taken once. Replacement level is the last starter in a league this size (${replTxt0}). For back-to-back picks both columns look past the pair. Points are through week ${R.weeks}, while the "now" rank uses ESPN's season total, which can include the week in progress.`;
   const replTxt = Object.entries(rp).map(([k, v]) => `${k}${v.rank} (${f1(v.points)})`).join(", ");
   $("draft").innerHTML = `<h2>Draft value</h2>
     <p class="note">Points over replacement from the players each team drafted, through week ${R.weeks}. "Vs. slot" compares that with what those draft slots usually return. This is the standard value-based method, worked out by this dashboard, not ESPN.</p>` +
@@ -279,7 +292,7 @@ function rDraft() {
     <div id="chart"></div>
     <h2>${tn(team)}, pick by pick</h2>
     <p class="note">"Vs. slot" is the pick's points over replacement against what a pick there usually returns. "Passed over" is the most valuable player at any position taken before this team's next turn. "Could have waited for" is the best player at the same position who was still there at the next turn, and "Edge" is how much better this pick was than him.</p>` +
-    how(` Read the last two pairs of columns together. A big "passed over" gap with a small edge means the position was taken too early: a similar player was available later and a better one at another position went begging. A big edge means the position was about to dry up and the pick was well timed. "Could have waited for" includes players nobody drafted, and for back-to-back picks it looks past the pair. This is value over next available, a standard draft-day measure, applied here with real results.`) +
+    how(pickHow) +
     table([["#",1],["Player"],["Drafted → now"],["Pts",1],["Over repl.",1],["Vs. slot",1],["Passed over"],["Gap",1],["Could have waited for"],["Edge",1,"This pick's points over replacement minus his"]], picks) +
     `<h2>Biggest misses</h2><p class="note">The widest gaps, in points over replacement, between a pick and a player taken before that team's next turn.</p>` +
     table([["Team"],["Took"],["Passed over"],["Went to"],["Gap",1]], misses) +
