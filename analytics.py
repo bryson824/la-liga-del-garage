@@ -464,8 +464,6 @@ def draft_analysis(conn: sqlite3.Connection, through_week: Optional[int] = None
     teams = []
     for t, tp in by_team.items():
         graded = [p for p in tp if p["graded"]]
-        rs = [p for p in graded if p["vs_adp"] <= -n_teams]
-        bs = [p for p in graded if p["vs_adp"] >= n_teams]
         best = max(graded, key=lambda p: p["vs_slot"])
         worst = min(graded, key=lambda p: p["vs_slot"])
         teams.append({
@@ -474,13 +472,7 @@ def draft_analysis(conn: sqlite3.Connection, through_week: Optional[int] = None
             "steals": sum(1 for p in graded if p["label"] == "steal"),
             "busts": sum(1 for p in graded if p["label"] == "bust"),
             "best": {"name": best["name"], "pick": best["pick"], "vs_slot": best["vs_slot"]},
-            "worst": {"name": worst["name"], "pick": worst["pick"], "vs_slot": worst["vs_slot"]},
-            "avg_vs_adp": sum(p["vs_adp"] for p in tp) / len(tp),
-            "reaches": len(rs), "bargains": len(bs),
-            "reach_value": sum(p["vs_slot"] for p in rs) / len(rs) if rs else None,
-            "bargain_value": sum(p["vs_slot"] for p in bs) / len(bs) if bs else None,
-            "best_reach": max(rs, key=lambda p: p["vs_slot"])["name"] if rs else None,
-            "worst_reach": min(rs, key=lambda p: p["vs_slot"])["name"] if rs else None})
+            "worst": {"name": worst["name"], "pick": worst["pick"], "vs_slot": worst["vs_slot"]}})
     teams.sort(key=lambda t: -t["value"])
     for i, t in enumerate(teams):
         t["rank"] = i + 1
