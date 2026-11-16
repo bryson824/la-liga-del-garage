@@ -83,7 +83,7 @@ tr.cut td { border-bottom: 1px solid var(--ink); }
 .dot.playing { background: var(--good); border-color: var(--good); }
 .dot.upcoming { background: transparent; } .dot.done, .dot.bye { background: var(--ink3); }
 /* small pieces */
-.bar { position: relative; height: 12px; width: 130px; }
+.bar { position: relative; height: 12px; width: 64px; }
 .bar i { position: absolute; top: 2px; height: 8px; }
 .bar::before { content: ""; position: absolute; left: 50%; top: -1px; bottom: -1px; width: 1px; background: var(--ink3); }
 .row { display: flex; gap: 8px 22px; align-items: baseline; flex-wrap: wrap; margin: 6px 0 10px; }
@@ -257,11 +257,11 @@ function rStandings() {
   const rows = D.standings.map((s, i) => {
     const w = Math.abs(s.luck) / mx * 50, left = s.luck >= 0 ? 50 : 50 - w;
     const cls = [s.team_id === team ? "me" : "", i + 1 === D.playoff_teams ? "cut" : ""].join(" ").trim();
-    return `<tr class="${cls}"><td class="n m">${i + 1}</td><td>${tn(s.team_id)}</td><td>${rec([s.wins, s.losses, s.ties])}</td><td class="n">${f1(s.points_for)}</td><td class="n">${f1(s.points_against)}</td><td>${s.all_play.replace("-", "–")}</td><td class="n">${f1(s.expected_wins)}</td><td class="n">${sg(s.luck)}</td><td><div class="bar"><i style="left:${left}%;width:${w}%;background:rgb(var(--${s.luck >= 0 ? "pos" : "neg"}))"></i></div></td><td class="n">${f1(dv[s.team_id])}</td><td class="n">${eff[s.team_id] ? Math.round(eff[s.team_id] * 100) + "%" : ""}</td></tr>`; });
+    return `<tr class="${cls}"><td class="n m">${i + 1}</td><td>${tn(s.team_id)}</td><td>${rec([s.wins, s.losses, s.ties])}</td><td class="n">${f1(s.points_for)}</td><td class="n">${f1(s.points_against)}</td><td>${s.all_play.replace("-", "–")}</td><td class="n">${f1(s.expected_wins)}</td><td class="n">${sg(s.luck)}</td><td><div class="bar"><i style="left:${left}%;width:${w}%;background:rgb(var(--${s.luck >= 0 ? "pos" : "neg"}))"></i></div></td><td class="n">${f1(dv[s.team_id])}</td><td class="n">${eff[s.team_id] ? Math.round(eff[s.team_id] * 100) + "%" : ""}</td><td class="n">${s.starter_weeks_hurt || m("0")}</td></tr>`; });
   $("standings").innerHTML = `<h2>Standings and luck</h2>
     <p class="note">Weeks 1–${D.through_week}. Luck is real wins minus expected wins.</p>` +
-    how(` All-play is a team's record had it played every other team every week. Expected wins applies that win rate to the games played. Draft value is explained on the Draft tab and lineup efficiency on the Lineups tab. Points for and against can include the week in progress.`) +
-    table([["",1],["Team"],["Record"],["PF",1],["PA",1],["All-play"],["Exp. wins",1],["Luck",1],[""],["Draft value",1,"Points over replacement from the players this team drafted"],["Lineup eff.",1,"Actual points as a share of the best possible lineup"]], rows);
+    how(` All-play is a team's record had it played every other team every week. Expected wins applies that win rate to the games played. Draft value is explained on the Draft tab and lineup efficiency on the Lineups tab. Hurt is the weeks this team's starters have missed through injuries that began while they were on this team, from the NFL's official injury listings; the History tab has every season. Points for and against can include the week in progress.`) +
+    table([["",1],["Team"],["Record"],["PF",1],["PA",1],["All-play"],["Exp. wins",1],["Luck",1],[""],["Draft value",1,"Points over replacement from the players this team drafted"],["Lineup eff.",1,"Actual points as a share of the best possible lineup"],["Hurt",1,"Starters hurt: weeks this team's starters missed through injuries that began on this team"]], rows);
 }
 
 function rBench() {
@@ -422,6 +422,18 @@ function rHistory() {
   const favRows = [...H.tendencies].sort((a, b) => ((b.favorites[0] || {}).times || 0) - ((a.favorites[0] || {}).times || 0) || b.favorites.length - a.favorites.length)
     .map(t => { const [top, ...rest] = t.favorites;
       return `<tr${me(t.team_id)}><td>${who(t)}</td><td>${top ? `${esc(top.name)} ${m(`${top.pos} · ${top.times} of ${t.drafts} drafts · ${when(top)}`)}` : m("No repeats")}</td><td class="n">${t.favorites.length}</td><td class="wrap">${rest.map(f => `<span title="${esc(when(f))}">${esc(f.name)}</span>`).join(", ")}</td></tr>`; });
+  const IJ = H.injuries, most = {}, LISTED = {IR: "IR", PUP: "PUP", NFI: "NFI", OUT: "Out", DOUBTFUL: "Doubtful"};
+  const listed = l => Object.entries(l).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${LISTED[k] || k} ${n}`).join(" · ");
+  const byTeam = k => (ms.find(z => z.key === k) || {}).team_id;
+  const ijTable = (part, tipOf) => { const most = {};
+    IJ.seasons.forEach(y => { most[y] = Math.max(0, ...part.rows.map(r => (r.by_season[y] || {}).weeks || 0)); });
+    return table([["Manager"], ["Total",1], ...IJ.seasons.map(y => [y === IJ.current ? y + " so far" : y, 1])], part.rows.map(r => `<tr${me(r.team_id)}><td>${who(r)}</td><td class="n"><b>${r.total}</b></td>${IJ.seasons.map(y => { const c = r.by_season[y];
+      if (!c) return `<td class="n">${m("–")}</td>`;
+      return `<td class="n" title="${esc(c.players.map(tipOf).join(", "))}">${!c.weeks ? m("0") : c.weeks === most[y] ? "<b>" + c.weeks + "</b>" : c.weeks}</td>`; }).join("")}</tr>`)); };
+  const ijLong = IJ.starters.longest.map(x => `<tr${me(byTeam(x.key))}><td>${cn(name(x.key) || x.team)}</td><td>${esc(short(x.name))} ${m(x.pos)}</td><td>${x.season}</td><td class="n">${x.onset}</td><td class="n">${x.weeks}</td><td>${listed(x.listed)}${x.injury ? " " + m(esc(x.injury.toLowerCase())) : ""}</td></tr>`);
+  const got = side => side.players.map(x => `${esc(x.name.replace(/^(\S)\S*\s+/, "$1. "))}${x.weeks ? " " + m(x.weeks) : ""}`).join(", ");
+  const ijTrades = IJ.trades.filter(t => t.sides.some(x => x.weeks)).map(t => { const [a, b] = t.sides;
+    return `<tr><td>${t.season} ${m("wk " + t.week)}</td><td>${cn(name(a.key) || a.team)}</td><td>${got(a)}</td><td class="n">${a.weeks || m("0")}</td><td>${cn(name(b.key) || b.team)}</td><td>${got(b)}</td><td class="n">${b.weeks || m("0")}</td></tr>`; });
   const big = H.tendencies.flatMap(t => t.favorites.filter(f => f.times >= 3).map(f => `${esc(t.name || "Former manager")} has taken ${esc(f.name)} in ${f.times} of ${t.drafts} drafts`));
   $("history").innerHTML = `<h2>All-time</h2>
     <p class="note">Finished seasons, ${H.seasons[0]}–${H.seasons[H.seasons.length - 1]}, by manager under this year's team name. Records are regular season.</p>` +
@@ -430,6 +442,16 @@ function rHistory() {
     how(` Same measure as the Draft tab: total points over replacement from the players each manager drafted, with replacement levels worked out separately for each season. "Finished total" and "Vs. slot" add up the completed seasons only.`) +
     table([["Manager"], ...DR.seasons.map(y => [y === DR.current ? y + " so far" : y, 1]), ["Avg. rank",1], ["Best / worst",1], ["Finished total",1], ["Vs. slot",1]], drRows) +
     `<div class="two"><div><h2>Best picks, ${DR.seasons[0]}–${DR.seasons[DR.seasons.length - 2]}</h2>${pickTable(DR.best_picks)}</div><div><h2>Worst picks</h2>${pickTable(DR.worst_picks)}</div></div>` +
+    `<h2>Starters lost to injury</h2><p class="note">Weeks missed through injury by players who had already started for a manager that season, charged to whoever had the player when he got hurt, ordered by total. Finished seasons run to week 17; ${IJ.current} runs to week ${IJ.through_week}. The most in each season is in bold. Hover a cell for the players.</p>` +
+    how(` A week counts when the NFL's injury report listed the player Out or Doubtful, or he was on injured reserve, the PUP list or the non-football injury list, in a week his team played. Bye weeks and suspensions don't count. An injury runs from the first week he is listed until he is available again. It is charged to the manager who had him the week before he was first listed, if he had been in that manager's starting lineup earlier in the season. A week-1 injury is charged to the manager who drafted him, if he went in rounds 1–${IJ.rounds}. Every week of the injury counts for that manager, even after a trade or drop. Statuses come from the league's weekly injury reports and rosters, as published by nflverse.`) +
+    ijTable(IJ.starters, x => `${x.name} (from wk ${x.onset}) ${x.weeks}`) +
+    `<h2>Early picks lost to injury</h2><p class="note">Weeks missed through injury by players drafted in rounds 1–${IJ.rounds}, charged to the manager who drafted them wherever the player was by then. Hover a cell for the players.</p>` +
+    ijTable(IJ.draft, x => `${x.name} (R${x.round}) ${x.weeks}`) +
+    `<h2>Longest absences</h2><p class="note">The single injuries that cost a manager's starters the most weeks.</p>` +
+    table([["Manager"],["Player"],["Season"],["From wk",1],["Weeks",1],["Listed as"]], ijLong) +
+    `<h2>Trades and injuries</h2><p class="note">Trades where a player went on to miss weeks through an injury that began on his new roster, with the weeks each side lost. Grey numbers are each player's weeks.</p>` +
+    how(` Trades are read from the weekly rosters: players changing teams between two weeks, in both directions at once. The week is the first week on the new team. An injury that began after a player was traded on again counts for the team that had him then, not here.`) +
+    table([["Season"],["Team"],["Got"],["Weeks",1],["Team"],["Got"],["Weeks",1]], ijTrades) +
     `<h2>Team names</h2><p class="note">Every name each team has gone by, one per season. Only the name a team finished each season with is on record, so mid-season changes don't appear.</p>` +
     table([["Now"], ...H.seasons.map(y => [y])], ms.filter(x => x.seasons).map(x => `<tr${me(x.team_id)}><td>${who(x)}</td>${H.seasons.map(y => `<td>${x.finishes[y] ? esc(x.finishes[y].name) : m("–")}</td>`).join("")}</tr>`)) +
     `<h2>Head to head</h2><p class="note">Row team's record against column team, regular season and playoff bracket games, including this season so far.</p>` +
@@ -455,6 +477,7 @@ function rGlossary() {
       ["Luck", "Actual wins minus expected wins. Positive means the schedule has been kind; negative means the team has scored well and lost anyway."],
       ["PF and PA", "Points for and points against, for the season so far. They can include the week in progress."],
       ["Draft value", "Total points over replacement from the players a team drafted. See the Draft entries below."],
+      ["Hurt", "Weeks this season that a team's starters missed through injury, counted the same way as Starters lost to injury under History."],
       ["Lineup efficiency", "Points a team's starters actually scored, divided by the points its best possible lineup would have scored, across all completed weeks."]]],
     ["Lineups", [
       ["Best lineup", "The highest-scoring legal lineup a team could have set that week from its starters and bench: 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX, 1 D/ST and 1 K. Players on IR are not counted."],
@@ -493,6 +516,9 @@ function rGlossary() {
       ["Titles and playoffs", "Seasons finished first, and seasons seeded into the playoff bracket."],
       ["Head to head", "One manager's record against another across regular-season and playoff-bracket games, including the current season."],
       ["Drafting, season by season", "Draft value worked out separately for each season, with that season's own replacement levels, and the team's rank among the league that year."],
+      ["Starters lost to injury", "Weeks a player was officially out (Out or Doubtful on the NFL injury report, or on injured reserve, the PUP list or the non-football injury list) in weeks his team played, counted for the manager who had him the week before he was first listed out, if he had started for that manager earlier in the season. A week-1 injury counts for the manager who drafted him in rounds 1–7. All weeks of the injury count, even after a trade or drop. Suspensions and bye weeks are not counted. Finished seasons cover weeks 1 to 17."],
+      ["Early picks lost to injury", "The same weeks for players drafted in rounds 1–7, counted for the manager who drafted them wherever the player had gone."],
+      ["Trades and injuries", "For each trade, the weeks the players each side received went on to miss through injuries that began while that side had them. Trades are read from week-to-week roster changes."],
       ["Draft habits", "Positions taken in the first three rounds across every draft, and the average round of a manager's first quarterback and first tight end."],
       ["Favourite players", "Players the same manager has drafted in more than one season."]]]];
   $("glossary").innerHTML = `<h2>Glossary</h2><p class="note">What each number on this site means and how it is worked out.</p>` +

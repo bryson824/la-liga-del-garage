@@ -289,6 +289,19 @@ class EspnClient:
         self._write(name, out)
         return out
 
+    def week_rosters(self, year: int, week: int) -> List[List[int]]:
+        """Every team's roster in one week of a finished season, as
+        [team id, player id, lineup slot]. Cached for good."""
+        name = "rosters_%d_wk%02d" % (year, week)
+        cached = self._read(name)
+        if cached is not None:
+            return cached
+        d = self._fetch([("view", "mRoster"), ("scoringPeriodId", week)], season=year)
+        out = [[t.get("id"), e.get("playerId"), e.get("lineupSlotId")]
+               for t in d.get("teams", []) for e in (t.get("roster") or {}).get("entries", [])]
+        self._write(name, out)
+        return out
+
     def players_season(self, year: int, limit: int = 500) -> List[Dict[str, Any]]:
         """Top scorers of a finished earlier season, slimmed. Cached for good."""
         name = "players_weekly_%d" % year

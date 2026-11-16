@@ -701,6 +701,209 @@ def drop_regret(conn: sqlite3.Connection, through_week: Optional[int] = None
     return sorted(out, key=lambda d: -d["net"])
 
 
+MISSED = ("IR", "PUP", "NFI", "OUT", "DOUBTFUL")  # official statuses that mean he sat
+LISTED_ROUNDS = 7  # a lineup has seven QB/RB/WR/TE spots
+
+
+def _window(conn: sqlite3.Connection, year: int, through_week: int) -> int:
+    """Weeks that count for a season: the fantasy season (1 to 17) once finished."""
+    return through_week if year == int(_meta(conn, "season") or 0) else 17
+
+
+def _holders(conn: sqlite3.Connection, year: int) -> Dict[Tuple[int, int], Tuple[int, int]]:
+    """(player, week) -> (fantasy team, lineup slot) for one season."""
+    if year == int(_meta(conn, "season") or 0):
+        rows = conn.execute("SELECT player_id, week, team_id, slot_id FROM lineups")
+    else:
+        rows = conn.execute("SELECT player_id, week, team_id, slot_id FROM history_rosters "
+                            "WHERE season=?", (year,))
+    return {(p, w): (t, s) for p, w, t, s in rows}
+
+
+def _draft_rounds(conn: sqlite3.Connection, year: int) -> Dict[int, Tuple[int, int]]:
+    """player -> (team that drafted him, round)."""
+    if year == int(_meta(conn, "season") or 0):
+        rows = conn.execute("SELECT player_id, team_id, round FROM draft_picks")
+    else:
+        rows = conn.execute("SELECT player_id, team_id, round FROM history_picks WHERE season=?",
+                            (year,))
+    return {p: (t, r) for p, t, r in rows}
+
+
+def injury_stints(conn: sqlite3.Connection, year: int, last: int) -> Dict[int, List[Dict[str, Any]]]:
+    """Each player's injuries in a season, from the official weekly statuses.
+
+    An injury starts in the first week he is listed unavailable (MISSED) and runs
+    until a week he is available again. Weeks with no listing (byes, or no NFL
+    team) neither count nor end it. Only weeks up to `last` are counted.
+    """
+    status: Dict[int, Dict[int, Tuple[str, str]]] = {}
+    for w, pid, st, inj in conn.execute(
+            "SELECT week, player_id, status, injury FROM nfl_status WHERE season=? AND week<=? "
+            "ORDER BY week", (year, last)):
+        status.setdefault(pid, {})[w] = (st, inj or "")
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for pid, weeks in status.items():
+        cur: Optional[Dict[str, Any]] = None
+        for w in sorted(weeks):
+            st, inj = weeks[w]
+            if st not in MISSED:
+                cur = None
+                continue
+            if cur is None:
+                cur = {"onset": w, "weeks": 0, "listed": {}, "injuries": []}
+                out.setdefault(pid, []).append(cur)
+            cur["weeks"] += 1
+            cur["listed"][st] = cur["listed"].get(st, 0) + 1
+            if inj:
+                cur["injuries"].append(inj)
+    for stints in out.values():
+        for x in stints:
+            inj = x.pop("injuries")
+            x["injury"] = max(set(inj), key=inj.count) if inj else ""
+    return out
+
+
+def starters_hurt(conn: sqlite3.Connection, year: int, through_week: int) -> List[Dict[str, Any]]:
+    """Injuries charged to the team that had the player when he got hurt.
+
+    The team is whoever had him the week before he was first listed out (the
+    drafting team for a week-1 injury). It counts if he had already been in that
+    team's starting lineup that season, or, for a week-1 injury, if that team
+    drafted him in the first seven rounds. Every week of the injury counts for
+    that team, even after a trade or drop.
+    """
+    last = _window(conn, year, through_week)
+    held = _holders(conn, year)
+    drafted = _draft_rounds(conn, year)
+    pos = dict(conn.execute("SELECT player_id, position_id FROM players"))
+    out = []
+    for pid, stints in injury_stints(conn, year, last).items():
+        if pos.get(pid) not in SKILL_SLOT:
+            continue
+        for x in stints:
+            on = x["onset"]
+            if on == 1:
+                team, rnd = drafted.get(pid, (None, 99))
+                ok = team is not None and rnd <= LISTED_ROUNDS
+            else:
+                team = (held.get((pid, on - 1)) or (None, None))[0]
+                ok = team is not None and any(
+                    held.get((pid, w), (None, None))[0] == team
+                    and held[(pid, w)][1] not in (BENCH, IR) for w in range(1, on))
+            if ok:
+                out.append(dict(x, player_id=pid, team_id=team, season=year))
+    return out
+
+
+def trade_injuries(conn: sqlite3.Connection, year: int, through_week: int
+                   ) -> List[Dict[str, Any]]:
+    """Every trade of a season, with the weeks each side's new players went on to miss.
+
+    Trades are read from the weekly rosters: players moving between two teams
+    from one week to the next, in both directions at once. An injury counts for
+    the team that received the player if he was still theirs the week before he
+    was first listed out (the same rule as starters_hurt), and all its weeks
+    count, even after a later trade or drop.
+    """
+    last = _window(conn, year, through_week)
+    held = _holders(conn, year)
+    moves: Dict[Tuple[int, int, int], List[int]] = {}  # (week joined, from, to) -> players
+    for (pid, w), (team, _) in held.items():
+        before = held.get((pid, w - 1))
+        if before and before[0] != team:
+            moves.setdefault((w, before[0], team), []).append(pid)
+    stints = injury_stints(conn, year, last)
+    out = []
+    for (w, a, b), players in sorted(moves.items()):
+        if a > b or (w, b, a) not in moves or w > last:
+            continue  # each trade once; one-way moves are drops and pickups
+        sides = []
+        for team, got in ((b, players), (a, moves[(w, b, a)])):
+            items = [{"player_id": pid, "weeks": sum(
+                x["weeks"] for x in stints.get(pid, []) if x["onset"] > w
+                and held.get((pid, x["onset"] - 1), (None,))[0] == team)} for pid in got]
+            sides.append({"team_id": team, "players": items,
+                          "weeks": sum(i["weeks"] for i in items)})
+        out.append({"season": year, "week": w, "sides": sides})
+    return out
+
+
+def injury_report(conn: sqlite3.Connection, owner_of: Dict[Tuple[int, int], str],
+                  team_name: Dict[Tuple[int, int], str], pname: Dict[int, str],
+                  seasons: List[int], current: int, through_week: int) -> Dict[str, Any]:
+    """Three views of injury luck across every season on record.
+
+    draft: weeks missed by each manager's first LISTED_ROUNDS picks, whoever had
+    them by then. starters: starters_hurt, charged to whoever had the player.
+    trades: trade_injuries.
+    """
+    pos = dict(conn.execute("SELECT player_id, position_id FROM players"))
+
+    def player(pid: int) -> Dict[str, Any]:
+        return {"name": pname.get(pid) or "Player %s" % pid, "pos": POS.get(pos.get(pid), "?")}
+
+    def table(entries: List[Tuple[int, int, Optional[Dict[str, Any]]]]) -> List[Dict[str, Any]]:
+        rows: Dict[str, Dict[str, Any]] = {}
+        for yr, tid, item in entries:
+            o = owner_of.get((yr, tid))
+            if not o:
+                continue
+            r = rows.setdefault(o, {"owner": o, "by_season": {}, "total": 0})
+            cell = r["by_season"].setdefault(yr, {"weeks": 0, "players": []})
+            if item:
+                cell["weeks"] += item["weeks"]
+                cell["players"].append(item)
+                r["total"] += item["weeks"]
+        for r in rows.values():
+            for cell in r["by_season"].values():
+                cell["players"].sort(key=lambda x: -x["weeks"])
+        return sorted(rows.values(), key=lambda r: -r["total"])
+
+    def longest(entries: List[Tuple[int, int, Optional[Dict[str, Any]]]]) -> List[Dict[str, Any]]:
+        top = sorted((e for e in entries if e[2]), key=lambda e: (-e[2]["weeks"], e[0]))[:10]
+        return [dict(item, owner=owner_of.get((yr, tid)), season=yr,
+                     team=team_name.get((yr, tid))) for yr, tid, item in top]
+
+    draft: List[Tuple[int, int, Optional[Dict[str, Any]]]] = []
+    starters: List[Tuple[int, int, Optional[Dict[str, Any]]]] = []
+    trades = []
+    for yr in seasons:
+        last = _window(conn, yr, through_week)
+        stints = injury_stints(conn, yr, last)
+        for pid, (tid, rnd) in _draft_rounds(conn, yr).items():
+            if rnd > LISTED_ROUNDS or pos.get(pid) not in SKILL_SLOT:
+                continue
+            draft.append((yr, tid, None))  # every drafting team gets a cell, even at zero
+            listed: Dict[str, int] = {}
+            for x in stints.get(pid, []):
+                for k, n in x["listed"].items():
+                    listed[k] = listed.get(k, 0) + n
+            weeks = sum(listed.values())
+            if weeks:
+                inj = [x["injury"] for x in stints[pid] if x["injury"]]
+                draft.append((yr, tid, dict(player(pid), round=rnd, weeks=weeks, listed=listed,
+                                            injury=inj[0] if inj else "")))
+        for tid in {t for (y, t) in owner_of if y == yr}:
+            starters.append((yr, tid, None))
+        for x in starters_hurt(conn, yr, through_week):
+            starters.append((yr, x["team_id"], dict(player(x["player_id"]), onset=x["onset"],
+                                                    weeks=x["weeks"], listed=x["listed"],
+                                                    injury=x["injury"])))
+        for t in trade_injuries(conn, yr, through_week):
+            trades.append({"season": yr, "week": t["week"], "sides": [
+                {"owner": owner_of.get((yr, side["team_id"])),
+                 "team": team_name.get((yr, side["team_id"])), "weeks": side["weeks"],
+                 "players": [dict(player(i["player_id"]), weeks=i["weeks"])
+                             for i in side["players"]]} for side in t["sides"]]})
+    trades.sort(key=lambda t: (-t["season"], -t["week"]))
+    return {"seasons": seasons, "current": current, "through_week": through_week,
+            "rounds": LISTED_ROUNDS,
+            "draft": {"rows": table(draft), "longest": longest(draft)},
+            "starters": {"rows": table(starters), "longest": longest(starters)},
+            "trades": trades}
+
+
 def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dict[str, Any]:
     """All-time records by manager across the seasons ESPN has."""
     through_week = through_week or last_completed_week(conn)
@@ -847,19 +1050,30 @@ def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dic
                 "best_picks": [dict(p) for p in sorted(all_picks, key=lambda p: -p["vs_slot"])[:10]],
                 "worst_picks": [dict(p) for p in sorted(all_picks, key=lambda p: p["vs_slot"])[:10]]}
 
+    injuries = injury_report(conn, owner_of, team_name, pname,
+                             sorted({s for s, _ in owner_of}), season, through_week)
+    for part in (injuries["draft"], injuries["starters"]):
+        for r in part["rows"]:
+            r.update(label(r["owner"]))
+
     seasons = sorted({s for s, _ in owner_of if s != season})
     managers = sorted(mgr.values(), key=lambda m: (-(m["titles"]), -(m["win_pct"] or 0)))
     # ESPN member ids stay server-side; the page gets short keys instead.
     key = {m["owner"]: "m%d" % i for i, m in enumerate(managers)}
     for group in (managers, tendencies, draft_rows, drafting["best_picks"],
-                  drafting["worst_picks"], *records.values()):
+                  drafting["worst_picks"], injuries["draft"]["rows"],
+                  injuries["draft"]["longest"], injuries["starters"]["rows"],
+                  injuries["starters"]["longest"], *records.values()):
         for row in group:
             if "owner" in row:
                 row["key"] = key.get(row.pop("owner"))
+    for t in injuries["trades"]:
+        for side in t["sides"]:
+            side["key"] = key.get(side.pop("owner"))
     return {"seasons": seasons, "managers": managers,
             "h2h": {key[a]: {key[b]: r for b, r in row.items() if b in key}
                     for a, row in h2h.items() if a in key},
-            "records": records, "drafting": drafting,
+            "records": records, "drafting": drafting, "injuries": injuries,
             "tendencies": sorted(tendencies, key=lambda t: t["first_qb"] or 99)}
 
 
@@ -880,6 +1094,11 @@ def dashboard(conn: sqlite3.Connection, now_ms: int) -> Dict[str, Any]:
                           "all_play": "%d-%d" % (a["wins"], a["losses"]),
                           "expected_wins": a["expected_wins"],
                           "luck": w + 0.5 * ties - a["expected_wins"]})
+    hurt: Dict[int, int] = {}
+    for x in starters_hurt(conn, int(_meta(conn, "season") or 0), through):
+        hurt[x["team_id"]] = hurt.get(x["team_id"], 0) + x["weeks"]
+    for row in standings:
+        row["starter_weeks_hurt"] = hurt.get(row["team_id"], 0)
     standings.sort(key=lambda s: (-(s["wins"] + 0.5 * s["ties"]), -(s["points_for"] or 0)))
     return {
         "league": _meta(conn, "league_name"), "season": _meta(conn, "season"),

@@ -15,8 +15,9 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+import nfl_client
 from espn_client import EspnClient, EspnError
 
 ROOT = Path(__file__).resolve().parent
@@ -84,6 +85,14 @@ CREATE TABLE history_players (
 CREATE TABLE history_picks (
     season INTEGER, overall_pick INTEGER, round INTEGER, team_id INTEGER, player_id INTEGER
 );
+CREATE TABLE history_rosters (
+    season INTEGER, week INTEGER, team_id INTEGER, player_id INTEGER, slot_id INTEGER,
+    PRIMARY KEY (season, week, player_id)
+);
+CREATE TABLE nfl_status (
+    season INTEGER, week INTEGER, player_id INTEGER, status TEXT, injury TEXT,
+    PRIMARY KEY (season, week, player_id)
+);
 """
 
 
@@ -143,6 +152,67 @@ def _load_weeks(conn: sqlite3.Connection, season: int, p: Dict[str, Any]) -> Non
     for week, pts in (p.get("weekly") or {}).items():
         conn.execute("INSERT OR REPLACE INTO player_weeks VALUES (?,?,?,?)",
                      (season, p["id"], int(week), pts))
+
+
+_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+_NFL_POS = {1: {"QB"}, 2: {"RB", "FB"}, 3: {"WR"}, 4: {"TE"}, 5: {"K"}}
+
+
+def _name_key(name: str) -> str:
+    words = "".join(c for c in name.lower() if c.isalnum() or c == " ").split()
+    return " ".join(w for w in words if w not in _SUFFIXES)
+
+
+def _load_nfl_status(conn: sqlite3.Connection, seasons: Set[int], current: int,
+                     refresh: bool) -> Dict[str, int]:
+    """Official weekly injury status (see nfl_client), keyed by ESPN player id.
+
+    nflverse carries ESPN ids for most players. The rest are matched on name and
+    position against the players this league has drafted or rostered.
+    """
+    data = {}
+    for year in sorted(seasons):
+        try:  # finished seasons come from cache; the current one is refetched
+            data[year] = nfl_client.season_status(year, refresh=refresh and year == current)
+        except nfl_client.NflDataError:
+            continue  # a nice-to-have; never block the rest of the ingest
+    to_espn: Dict[str, int] = {}
+    info: Dict[str, Tuple[str, str]] = {}
+    for d in data.values():
+        for gsis, p in d["players"].items():
+            if p.get("espn"):
+                to_espn[gsis] = p["espn"]
+            info[gsis] = (p["name"], p["pos"])
+    by_name: Dict[str, List[str]] = {}
+    for gsis, (name, _) in info.items():
+        by_name.setdefault(_name_key(name), []).append(gsis)
+    ours = {pid: (name, pos) for pid, name, pos in conn.execute(
+        """SELECT player_id, name, position_id FROM players WHERE player_id IN
+           (SELECT player_id FROM draft_picks UNION SELECT player_id FROM history_picks
+            UNION SELECT player_id FROM history_rosters
+            UNION SELECT player_id FROM lineups)""") if name}
+    known = set(to_espn.values())
+    matched = unmatched = 0
+    for pid, (name, pos) in ours.items():
+        if pid in known or pos not in _NFL_POS:
+            continue
+        hits = [g for g in by_name.get(_name_key(name), [])
+                if g not in to_espn and info[g][1] in _NFL_POS[pos]]
+        if len(hits) == 1:
+            to_espn[hits[0]] = pid
+            matched += 1
+        else:
+            unmatched += 1
+    for year, d in data.items():
+        for gsis, p in d["players"].items():
+            pid = to_espn.get(gsis)
+            if not pid:
+                continue
+            for week in p.get("seen") or []:
+                code, injury = p["weeks"].get(str(week)) or ("ACT", "")
+                conn.execute("INSERT OR REPLACE INTO nfl_status VALUES (?,?,?,?,?)",
+                             (year, week, pid, code, injury or None))
+    return {"name_matched": matched, "unmatched": unmatched}
 
 
 def ingest(client: Any, db_path: Path = DB_PATH, refresh: bool = False,
@@ -262,6 +332,14 @@ def ingest(client: Any, db_path: Path = DB_PATH, refresh: bool = False,
             wanted.add(p["playerId"])
             conn.execute("INSERT INTO history_picks VALUES (?,?,?,?,?)", (
                 h["season"], p["overall"], p["round"], p["teamId"], p["playerId"]))
+        try:  # who had whom each week, through the fantasy final (week 17)
+            for week in range(1, 18):
+                for tid, pid, slot in client.week_rosters(int(year), week):
+                    conn.execute("INSERT OR REPLACE INTO history_rosters VALUES (?,?,?,?,?)",
+                                 (h["season"], week, tid, pid, slot))
+                    wanted.add(pid)
+        except EspnError:
+            pass
         try:  # that season's final point totals, for grading its draft
             for p in client.players_season(int(year)):
                 if p.get("seasonPoints") is not None:
@@ -283,10 +361,15 @@ def ingest(client: Any, db_path: Path = DB_PATH, refresh: bool = False,
     for p in client.players_by_ids(wanted, refresh=refresh or slow):
         _upsert_player(conn, p)
 
+    seasons = {int(y) for y in status.get("previousSeasons") or []}
+    seasons.add(int(league.get("seasonId") or 0))
+    nfl = _load_nfl_status(conn, seasons, int(league.get("seasonId") or 0), refresh or slow)
+    conn.execute("INSERT INTO meta VALUES (?,?)", ("nfl_name_matched", str(nfl["name_matched"])))
+
     conn.commit()
     counts = {t: conn.execute("SELECT COUNT(*) FROM %s" % t).fetchone()[0]
               for t in ("teams", "players", "matchups", "lineups", "draft_picks",
-                        "transactions", "trades", "pro_games")}
+                        "transactions", "trades", "pro_games", "nfl_status")}
     conn.close()
     os.replace(str(tmp_path), str(db_path))
     return counts
