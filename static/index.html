@@ -48,6 +48,8 @@ h2 { font: 600 19px/1.25 var(--serif); margin: 44px 0 4px; } section > h2:first-
 .note { color: var(--ink2); font-size: 13px; margin: 0 0 12px; max-width: 72ch; }
 details.how { color: var(--ink2); font-size: 13px; margin: -6px 0 12px; max-width: 72ch; }
 details.how summary { cursor: pointer; color: var(--ink3); }
+dl.gl { margin: 0 0 8px; max-width: 78ch; } dl.gl dt { font-weight: 600; margin-top: 14px; }
+dl.gl dd { margin: 2px 0 0; color: var(--ink2); }
 details.how ul { margin: 8px 0; padding-left: 18px; } details.how li { margin: 3px 0; } details.how b { color: var(--ink); font-weight: 600; }
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
@@ -144,10 +146,11 @@ svg text { fill: var(--ink2); font: 11px var(--sans); } svg .lbl { fill: var(--i
 <section id="moves"></section>
 <section id="swap"></section>
 <section id="history"></section>
+<section id="glossary"></section>
 </div>
 <div id="tip"></div>
 <script>
-const TABS = [["live","Live"],["standings","Standings"],["bench","Lineups"],["draft","Draft"],["moves","Trades & waivers"],["swap","Schedule swap"],["history","History"]];
+const TABS = [["live","Live"],["standings","Standings"],["bench","Lineups"],["draft","Draft"],["moves","Trades & waivers"],["swap","Schedule swap"],["history","History"],["glossary","Glossary"]];
 let STATIC = false;
 let D = null, tab = localStorage.tab || "live", team = null, pos = "All", gridMode = "lost";
 const $ = id => document.getElementById(id);
@@ -206,7 +209,7 @@ function render() {
   $("team").innerHTML = Object.values(D.teams).map(t => `<option value="${t.team_id}"${t.team_id === team ? " selected" : ""}>${esc(t.name)}</option>`).join("");
   const open = new Set([...document.querySelectorAll("#live details[open]")].map(d => d.dataset.k));
   const y = scrollY;
-  rLive(open); rStandings(); rBench(); rDraft(); rMoves(); rSwap(); rHistory(); showTab();
+  rLive(open); rStandings(); rBench(); rDraft(); rMoves(); rSwap(); rHistory(); rGlossary(); showTab();
   scrollTo(0, y);
 }
 
@@ -416,6 +419,8 @@ function rHistory() {
     how(` Same measure as the Draft tab: total points over replacement from the players each manager drafted, with replacement levels worked out separately for each season. "Finished total" and "Vs. slot" add up the completed seasons only.`) +
     table([["Manager"], ...DR.seasons.map(y => [y === DR.current ? y + " so far" : y, 1]), ["Avg. rank",1], ["Best / worst",1], ["Finished total",1], ["Vs. slot",1]], drRows) +
     `<div class="two"><div><h2>Best picks, ${DR.seasons[0]}–${DR.seasons[DR.seasons.length - 2]}</h2>${pickTable(DR.best_picks)}</div><div><h2>Worst picks</h2>${pickTable(DR.worst_picks)}</div></div>` +
+    `<h2>Team names</h2><p class="note">Every name each team has gone by, one per season. Only the name a team finished each season with is on record, so mid-season changes don't appear.</p>` +
+    table([["Now"], ...H.seasons.map(y => [y])], ms.filter(x => x.seasons).map(x => `<tr${me(x.team_id)}><td>${who(x)}</td>${H.seasons.map(y => `<td>${x.finishes[y] ? esc(x.finishes[y].name) : m("–")}</td>`).join("")}</tr>`)) +
     `<h2>Head to head</h2><p class="note">Row team's record against column team, regular season and playoff bracket games, including this season so far.</p>` +
     `<div id="h2h" class="matrix">${table([[""], ...order.map(b => [esc((D.teams[b.team_id] || {}).abbrev || ""), 2, b.name])], h2h)}</div>` +
     `<div class="two"><div><h2>Highest scores</h2>${game(H.records.high, g => f1(g.points))}</div><div><h2>Lowest scores</h2>${game(H.records.low, g => f1(g.points))}</div>
@@ -429,6 +434,60 @@ function rHistory() {
 
 let wasNarrow = narrow();
 addEventListener("resize", () => { if (D && narrow() !== wasNarrow) { wasNarrow = narrow(); render(); } });
+function rGlossary() {
+  const rp = D.draft.replacement, R = D.draft;
+  const repl = Object.entries(rp).map(([k, v]) => `${k}${v.rank}`).join(", ");
+  const groups = [
+    ["Standings", [
+      ["All-play", "A team's record if it had played every other team every week. Each week a team gets a win for every team it outscored and a loss for every team that outscored it."],
+      ["Expected wins", "All-play win rate multiplied by the number of games played. A team that would have beaten 60% of the league each week over nine weeks has 5.4 expected wins."],
+      ["Luck", "Actual wins minus expected wins. Positive means the schedule has been kind; negative means the team has scored well and lost anyway."],
+      ["PF and PA", "Points for and points against, for the season so far. They can include the week in progress."],
+      ["Draft value", "Total points over replacement from the players a team drafted. See the Draft entries below."],
+      ["Lineup efficiency", "Points a team's starters actually scored, divided by the points its best possible lineup would have scored, across all completed weeks."]]],
+    ["Lineups", [
+      ["Best lineup", "The highest-scoring legal lineup a team could have set that week from its starters and bench: 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX, 1 D/ST and 1 K. Players on IR are not counted."],
+      ["Points left", "Best lineup points minus the points the lineup actually set scored. Shown per week and added up for the season."],
+      ["Winnable losses", "Games a team lost that its best lineup would have won against the opponent's real lineup."],
+      ["Lost on one call", "Losses that a single swap would have flipped: one bench player in for the weakest starter he could legally replace."],
+      ["If perfect", "A team's record if it had set its best lineup every week, with opponents' lineups left as they were."],
+      ["Both perfect", "A team's record if every team had set its best lineup every week."],
+      ["Swing", "For one sit/start decision, the bench player's points minus the points of the weakest starter he could have replaced."]]],
+    ["Draft", [
+      ["Replacement level", `The last starter in a league this size at each position: ${repl}. It stands for the player anyone could pick up for free. Kickers and defenses are left out of draft grading.`],
+      ["Over replacement", "A player's season points minus the replacement-level player's points at his position. Below zero counts as zero, because a manager would simply start someone else."],
+      ["Draft value", "The sum of points over replacement for every player a team drafted. It grades the players as drafted, so later trades, drops and injuries are not adjusted for."],
+      ["Slot", "What a pick in that part of the draft usually returns: the average points over replacement for picks within six spots of it, across every draft on record, scaled to the weeks played."],
+      ["Vs. slot", "A pick's points over replacement minus its slot. Positive means the pick returned more than picks there usually do."],
+      ["Steal and bust", `A pick at least ${Math.round(R.label_threshold)} points above its slot is a steal; at least ${Math.round(R.label_threshold)} below is a bust. The threshold is four points per week played.`],
+      ["Passed over", "The most valuable player at any position who was drafted after a pick and before that team's next pick. For back-to-back picks the window starts after the pair."],
+      ["Gap", "The passed-over player's points over replacement minus the pick's. It is what was given up by making the pick."],
+      ["Could have waited for", "The best player at the same position who was still on the board at the team's next pick, whether he was drafted later or not at all."],
+      ["Edge", "A pick's points over replacement minus those of the player it could have waited for. Near zero means the same value was available later; negative means a better player at the position was."],
+      ["Redraft", "Every player ordered by points over replacement, as if the league drafted again today. The move shows how far a player rose or fell from his actual pick."]]],
+    ["Trades and waivers", [
+      ["Trade ledger", "Points scored since a trade by the players each side received, counted from the first week after the trade through the last completed week."],
+      ["Started points", "Points a player scored in weeks he was in that team's starting lineup."],
+      ["Roster points", "Points a player scored in weeks he was on that team's roster, started or not."],
+      ["Waiver wire", "For every player a manager added during the season, the points he scored for that manager from the week he was added."],
+      ["Drop regret", "For a player a manager cut, the weeks he then started for another team."],
+      ["Pts since", "The dropped player's points in those weeks."],
+      ["Replacement starter", "In the same weeks, the points of the weakest starter on the dropping team that the dropped player could have replaced."],
+      ["Net", "Pts since minus replacement starter. Positive means the drop cost points; negative means the manager's own starters did better."]]],
+    ["Schedule swap", [
+      ["Schedule swap", "The wins a team would have if it had played another team's opponents, week by week, using everyone's real scores. In the week that schedule has the team facing itself, it plays the schedule's owner."]]],
+    ["History", [
+      ["Record and win %", "Regular-season wins and losses across finished seasons. Win % counts a tie as half a win."],
+      ["Pts / game", "Regular-season points for divided by regular-season games."],
+      ["Titles and playoffs", "Seasons finished first, and seasons seeded into the playoff bracket."],
+      ["Head to head", "One manager's record against another across regular-season and playoff-bracket games, including the current season."],
+      ["Drafting, season by season", "Draft value worked out separately for each season, with that season's own replacement levels, and the team's rank among the league that year."],
+      ["Draft habits", "Positions taken in the first three rounds across every draft, and the average round of a manager's first quarterback and first tight end."],
+      ["Favourite players", "Players the same manager has drafted in more than one season."]]]];
+  $("glossary").innerHTML = `<h2>Glossary</h2><p class="note">What each number on this site means and how it is worked out.</p>` +
+    groups.map(([title, items]) => `<h2>${title}</h2><dl class="gl">${items.map(([t, d]) => `<dt>${t}</dt><dd>${d}</dd>`).join("")}</dl>`).join("");
+}
+
 load(); setInterval(load, 60000);
 </script>
 </body>
