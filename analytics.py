@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -904,6 +905,145 @@ def injury_report(conn: sqlite3.Connection, owner_of: Dict[Tuple[int, int], str]
             "trades": trades}
 
 
+REG_WEEKS, BRACKET_SIZE = 14, 8  # this league's format in every finished season
+SCHEDULE_SAMPLES = 5000
+_SCHEDULE_CACHE: Dict[int, Dict[str, Any]] = {}
+
+
+def _season_games(conn: sqlite3.Connection, year: int, through_week: int
+                  ) -> Tuple[Dict[int, Dict[int, float]], Dict[int, Dict[int, int]]]:
+    """score[week][team] for every game of a season (playoff and consolation weeks
+    included), and opp[week][team] for its regular season."""
+    if year == int(_meta(conn, "season") or 0):
+        rows = conn.execute("SELECT week, home_team_id, home_points, away_team_id, away_points "
+                            "FROM matchups WHERE week <= ?", (through_week,))
+    else:
+        rows = conn.execute("SELECT week, home_team_id, home_points, away_team_id, away_points "
+                            "FROM history_games WHERE season = ?", (year,))
+    score: Dict[int, Dict[int, float]] = {}
+    opp: Dict[int, Dict[int, int]] = {}
+    for w, h, hp, a, ap in rows:
+        if h is None or a is None or hp is None or ap is None:
+            continue
+        score.setdefault(w, {}).update({h: hp, a: ap})
+        if w <= REG_WEEKS:
+            opp.setdefault(w, {}).update({h: a, a: h})
+    return score, opp
+
+
+def _records(score: Dict[int, Dict[int, float]], opp: Dict[int, Dict[int, int]],
+             slot: Dict[int, int]) -> Dict[int, float]:
+    """Regular-season wins when each team plays the schedule of slot[team]."""
+    holder = {v: k for k, v in slot.items()}
+    wins = {t: 0.0 for t in slot}
+    for w, pairs in opp.items():
+        for t in slot:
+            o = holder[pairs[slot[t]]]
+            mine, theirs = score[w][t], score[w][o]
+            wins[t] += 1.0 if mine > theirs else 0.5 if mine == theirs else 0.0
+    return wins
+
+
+def _champion(score: Dict[int, Dict[int, float]], wins: Dict[int, float],
+              points: Dict[int, float]) -> Tuple[int, List[int]]:
+    """Seed by wins then points scored, then play the bracket with the real
+    playoff-week scores: 1v8, 4v5, 2v7, 3v6, no reseeding. A tie goes to the
+    higher seed. Returns the champion and the seeds in order."""
+    seeds = sorted(wins, key=lambda t: (-wins[t], -points[t]))
+
+    def game(week: int, x: int, y: int) -> int:
+        x, y = sorted((x, y), key=seeds.index)
+        return x if score[week][x] >= score[week][y] else y
+    s = lambda i: seeds[i - 1]  # noqa: E731
+    w1 = REG_WEEKS + 1
+    q = [game(w1, s(1), s(8)), game(w1, s(4), s(5)), game(w1, s(2), s(7)), game(w1, s(3), s(6))]
+    return game(w1 + 2, game(w1 + 1, q[0], q[1]), game(w1 + 1, q[2], q[3])), seeds
+
+
+def schedule_season(conn: sqlite3.Connection, year: int, through_week: int) -> Dict[str, Any]:
+    """Schedule luck for one season, by team id.
+
+    swap[a][b]: a's wins had a and b traded schedules (a plays b's opponents,
+    and b where b played a); swap[a][a] is the real total. For finished seasons
+    also: the champion when each pair of teams trades schedules, and how often
+    each team makes the playoffs and wins the title across SCHEDULE_SAMPLES
+    random schedules (the real schedule with teams dealt into its slots at
+    random), always with the real weekly scores.
+    """
+    finished = year != int(_meta(conn, "season") or 0)
+    if finished and year in _SCHEDULE_CACHE:
+        return _SCHEDULE_CACHE[year]
+    score, opp = _season_games(conn, year, through_week)
+    teams = sorted({t for pairs in opp.values() for t in pairs})
+    same = {t: t for t in teams}
+    out: Dict[str, Any] = {"swap": {a: {} for a in teams}}
+    for a in teams:
+        for b in teams:
+            out["swap"][a][b] = _records(score, opp, {**same, a: b, b: a})[a]
+    playoffs = all(len(score.get(REG_WEEKS + k, {})) == len(teams) for k in (1, 2, 3))
+    if finished and playoffs and len(teams) >= BRACKET_SIZE and len(opp) == REG_WEEKS:
+        points = {t: sum(score[w][t] for w in opp) for t in teams}
+        real, seeds = _champion(score, _records(score, opp, same), points)
+        actual = conn.execute("SELECT team_id FROM history_teams WHERE season=? AND final_rank=1",
+                              (year,)).fetchone()
+        if not actual or actual[0] != real:  # the replay must reproduce what happened
+            _SCHEDULE_CACHE[year] = out
+            return out
+        swap_titles = {t: [] for t in teams}  # partners whose schedule wins t the title
+        for i, a in enumerate(teams):
+            for b in teams[i + 1:]:
+                champ, _ = _champion(score, _records(score, opp, {**same, a: b, b: a}),
+                                     points)
+                if champ in (a, b) and champ != real:
+                    swap_titles[champ].append(b if champ == a else a)
+        made = {t: 0 for t in teams}
+        won = {t: 0 for t in teams}
+        rng = random.Random(year)  # fixed, so the page doesn't change between builds
+        for _ in range(SCHEDULE_SAMPLES):
+            dealt = teams[:]
+            rng.shuffle(dealt)
+            champ, order = _champion(score, _records(score, opp, dict(zip(teams, dealt))), points)
+            won[champ] += 1
+            for t in order[:BRACKET_SIZE]:
+                made[t] += 1
+        out.update(champion=real, seeds=seeds, swap_titles=swap_titles,
+                   playoff_odds={t: made[t] / SCHEDULE_SAMPLES for t in teams},
+                   title_odds={t: won[t] / SCHEDULE_SAMPLES for t in teams})
+    if finished:
+        _SCHEDULE_CACHE[year] = out
+    return out
+
+
+def schedule_luck(conn: sqlite3.Connection, owner_of: Dict[Tuple[int, int], str],
+                  seasons: List[int], current: int, through_week: int) -> Dict[str, Any]:
+    """schedule_season for every season, keyed by manager instead of team id."""
+    swap: Dict[int, Dict[str, Dict[str, float]]] = {}
+    rows: Dict[str, Dict[str, Any]] = {}
+    title_seasons = []
+    for yr in seasons:
+        res = schedule_season(conn, yr, through_week)
+        o = lambda t: owner_of.get((yr, t))  # noqa: E731
+        swap[yr] = {o(a): {o(b): v for b, v in row.items() if o(b)}
+                    for a, row in res["swap"].items() if o(a)}
+        if "champion" not in res:
+            continue
+        title_seasons.append(yr)
+        for t, seed_at in ((t, res["seeds"].index(t) + 1) for t in res["seeds"]):
+            if not o(t):
+                continue
+            r = rows.setdefault(o(t), {"owner": o(t), "by_season": {}, "titles": 0,
+                                       "expected": 0.0})
+            r["by_season"][yr] = {"seed": seed_at, "champion": t == res["champion"],
+                                  "playoff_odds": res["playoff_odds"][t],
+                                  "title_odds": res["title_odds"][t],
+                                  "swaps": [o(x) for x in res["swap_titles"][t] if o(x)]}
+            r["titles"] += t == res["champion"]
+            r["expected"] += res["title_odds"][t]
+    return {"seasons": seasons, "current": current, "through_week": through_week,
+            "samples": SCHEDULE_SAMPLES, "swap": swap, "title_seasons": title_seasons,
+            "titles": sorted(rows.values(), key=lambda r: -r["expected"])}
+
+
 def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dict[str, Any]:
     """All-time records by manager across the seasons ESPN has."""
     through_week = through_week or last_completed_week(conn)
@@ -1052,6 +1192,10 @@ def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dic
 
     injuries = injury_report(conn, owner_of, team_name, pname,
                              sorted({s for s, _ in owner_of}), season, through_week)
+    schedules = schedule_luck(conn, owner_of, sorted({s for s, _ in owner_of}), season,
+                              through_week)
+    for r in schedules["titles"]:
+        r.update(label(r["owner"]))
     for part in (injuries["draft"], injuries["starters"]):
         for r in part["rows"]:
             r.update(label(r["owner"]))
@@ -1063,17 +1207,24 @@ def history(conn: sqlite3.Connection, through_week: Optional[int] = None) -> Dic
     for group in (managers, tendencies, draft_rows, drafting["best_picks"],
                   drafting["worst_picks"], injuries["draft"]["rows"],
                   injuries["draft"]["longest"], injuries["starters"]["rows"],
-                  injuries["starters"]["longest"], *records.values()):
+                  injuries["starters"]["longest"], schedules["titles"], *records.values()):
         for row in group:
             if "owner" in row:
                 row["key"] = key.get(row.pop("owner"))
     for t in injuries["trades"]:
         for side in t["sides"]:
             side["key"] = key.get(side.pop("owner"))
+    for r in schedules["titles"]:
+        for cell in r["by_season"].values():
+            cell["swaps"] = [key[o] for o in cell["swaps"] if o in key]
+    schedules["swap"] = {yr: {key[a]: {key[b]: v for b, v in row.items() if b in key}
+                              for a, row in m.items() if a in key}
+                         for yr, m in schedules["swap"].items()}
     return {"seasons": seasons, "managers": managers,
             "h2h": {key[a]: {key[b]: r for b, r in row.items() if b in key}
                     for a, row in h2h.items() if a in key},
             "records": records, "drafting": drafting, "injuries": injuries,
+            "schedules": schedules,
             "tendencies": sorted(tendencies, key=lambda t: t["first_qb"] or 99)}
 
 
