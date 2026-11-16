@@ -867,9 +867,9 @@ def dashboard(conn: sqlite3.Connection, now_ms: int) -> Dict[str, Any]:
     """Everything the web page needs, in one JSON-ready dict."""
     through = last_completed_week(conn)
     teams = {r[0]: {"team_id": r[0], "name": r[1], "abbrev": r[2], "points_for": r[3],
-                    "points_against": r[4]}
+                    "points_against": r[4], "manager": r[5]}
              for r in conn.execute(
-                 "SELECT team_id, name, abbrev, points_for, points_against FROM teams")}
+                 "SELECT team_id, name, abbrev, points_for, points_against, manager FROM teams")}
     recs, ap = records(conn, through), all_play(conn, through)
     standings = []
     for tid, t in teams.items():

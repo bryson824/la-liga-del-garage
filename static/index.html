@@ -134,6 +134,7 @@ svg text { fill: var(--ink2); font: 11px var(--sans); } svg .lbl { fill: var(--i
   <div><h1 id="title">Fantasy dashboard</h1><div class="sub" id="sub">Loading…</div></div>
   <div class="spacer"></div>
   <label class="ctl">Viewing <select id="team"></select></label>
+  <button class="link ctl" id="names" style="display:none">Show real names</button>
   <button class="link ctl" id="refresh">Refresh</button>
 </header>
 <nav id="nav"></nav>
@@ -159,11 +160,17 @@ const f2 = x => x == null ? "–" : (Math.round(x * 100) / 100).toFixed(2);
 const pc = x => x == null ? "–" : Math.round(x * 100) + "%";
 const f1 = x => x == null ? "–" : (Math.round(x * 10) / 10).toFixed(1);
 const sg = x => x == null ? "–" : (x > 0.049 ? "+" : x < -0.049 ? "−" : "") + f1(Math.abs(x));
-const T = id => D.teams[id] ? D.teams[id].name : (id ? "Team " + id : "Free agent");
+// Labels can be team names or the managers' real names (from names.json).
+let people = false;
+try { people = localStorage.people === "1"; } catch (e) {}
+const TEAM = id => D.teams[id] ? D.teams[id].name : (id ? "Team " + id : "Free agent");
+const T = id => people && D.teams[id] && D.teams[id].manager ? D.teams[id].manager : TEAM(id);
+const other = id => D.teams[id] && D.teams[id].manager ? (people ? TEAM(id) : D.teams[id].manager) : "";
+const short2 = id => people && D.teams[id] && D.teams[id].manager ? clip(D.teams[id].manager, 7) : (D.teams[id] || {}).abbrev || "";
 const narrow = () => innerWidth < 640;
 const clip = (t, n) => t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
 // On a phone long team names are clipped so tables keep room for numbers.
-const tn = id => narrow() ? `<span title="${esc(T(id))}">${esc(clip(T(id), 15))}</span>` : esc(T(id));
+const tn = id => `<span title="${esc(narrow() && T(id).length > 15 ? T(id) : other(id))}">${esc(narrow() ? clip(T(id), 15) : T(id))}</span>`;
 const short = nm => !narrow() || / D\/ST$/.test(nm) ? nm : nm.replace(/^(\S)\S*\s+/, "$1. ");
 const me = id => id === team ? ' class="me"' : "";
 const day = ms => new Date(ms).toLocaleDateString([], {month: "short", day: "numeric"});
@@ -183,6 +190,7 @@ function showTab() {
   const on = document.querySelector("nav button.on");
   if (on && on.scrollIntoView) on.scrollIntoView({block: "nearest", inline: "center"});
 }
+$("names").onclick = () => { people = !people; try { localStorage.people = people ? "1" : "0"; } catch (e) {} render(); };
 $("team").onchange = e => { team = +e.target.value; localStorage.team = team; render(); };
 $("refresh").onclick = async () => {
   $("refresh").disabled = true; $("refresh").textContent = "Refreshing…";
@@ -206,7 +214,10 @@ function render() {
   $("title").textContent = D.league;
   $("sub").textContent = `${D.season} season · through week ${D.through_week} · updated ${new Date(D.ingested_at).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}` + (D.live.games_in_progress ? " · live" : "");
   $("err").innerHTML = D.refresh_error ? `<p class="err">${esc(D.refresh_error)} Showing the last data pulled.</p>` : "";
-  $("team").innerHTML = Object.values(D.teams).map(t => `<option value="${t.team_id}"${t.team_id === team ? " selected" : ""}>${esc(t.name)}</option>`).join("");
+  $("team").innerHTML = Object.values(D.teams).map(t => `<option value="${t.team_id}"${t.team_id === team ? " selected" : ""}>${esc(t.name + (t.manager ? " · " + t.manager : ""))}</option>`).join("");
+  const anyNames = Object.values(D.teams).some(t => t.manager);
+  $("names").style.display = anyNames ? "" : "none";
+  $("names").textContent = people ? "Show team names" : "Show real names";
   const open = new Set([...document.querySelectorAll("#live details[open]")].map(d => d.dataset.k));
   const y = scrollY;
   rLive(open); rStandings(); rBench(); rDraft(); rMoves(); rSwap(); rHistory(); rGlossary(); showTab();
@@ -383,7 +394,7 @@ function rMoves() {
 
 function rSwap() {
   const S = D.schedule_swap, ids = D.standings.map(s => s.team_id);
-  const head = [["Team, with the schedule of →"], ...ids.map(i => [esc(D.teams[i].abbrev), 2, D.teams[i].name])];
+  const head = [["Team, with the schedule of →"], ...ids.map(i => [esc(short2(i)), 2, T(i)])];
   const rows = ids.map(a => { const real = S[a][a];
     return `<tr${me(a)}><td>${tn(a)}</td>` + ids.map(b => { const v = S[a][b], d = v - real;
       return `<td class="c${a === b ? " hit" : ""}" data-tip="${esc(a === b ? T(a) + ": real record" : T(a) + " with " + T(b) + "'s schedule")}" style="${a !== b && d ? `background:rgba(var(--${d > 0 ? "pos" : "neg"}),${Math.min(0.4, Math.abs(d) * 0.1)})` : ""}">${v}</td>`; }).join("") + "</tr>"; });
@@ -393,14 +404,14 @@ function rSwap() {
 }
 
 function rHistory() {
-  const H = D.history, ms = H.managers, name = k => { const x = ms.find(z => z.key === k); return x && x.name ? x.name : ""; };
-  const cn = t => esc(narrow() ? clip(t || "", 15) : (t || "")), who = x => cn(x.name || "Former manager");
+  const H = D.history, ms = H.managers, name = k => { const x = ms.find(z => z.key === k); return x && x.team_id ? T(x.team_id) : x && x.name ? x.name : ""; };
+  const cn = t => esc(narrow() ? clip(t || "", 15) : (t || "")), who = x => cn(x.team_id ? T(x.team_id) : x.name || "Former manager");
   const fin = r => r == null ? m("–") : r === 1 ? "<b>1st</b>" : r + (r === 2 ? "nd" : r === 3 ? "rd" : "th");
   const all = ms.filter(x => x.seasons).map(x => `<tr${me(x.team_id)}><td>${who(x)}</td><td class="c">${x.wins}–${x.losses}${x.ties ? "–" + x.ties : ""}</td><td class="n">${x.win_pct == null ? "–" : x.win_pct.toFixed(3).replace(/^0/, "")}</td><td class="n">${f1(x.points_for / Math.max(1, x.wins + x.losses + x.ties))}</td><td class="n">${x.titles || m("0")}</td><td class="n">${x.playoffs}</td>${H.seasons.map(s => `<td class="c" title="${esc(x.finishes[s] ? x.finishes[s].name + ", " + x.finishes[s].record : "")}">${fin(x.finishes[s] && x.finishes[s].rank)}</td>`).join("")}<td class="n">${f1(x.avg_finish)}</td></tr>`);
   const order = ms.filter(x => x.team_id);
-  const h2h = order.map(a => `<tr${me(a.team_id)}><td>${cn(a.name)}</td>` + order.map(b => { if (a.key === b.key) return `<td class="c m">·</td>`;
+  const h2h = order.map(a => `<tr${me(a.team_id)}><td>${cn(T(a.team_id))}</td>` + order.map(b => { if (a.key === b.key) return `<td class="c m">·</td>`;
     const r = (H.h2h[a.key] || {})[b.key]; if (!r) return `<td class="c m">–</td>`; const d = r[0] - r[1];
-    return `<td class="c" data-tip="${esc(a.name + " vs " + b.name)}" style="${d ? `background:rgba(var(--${d > 0 ? "pos" : "neg"}),${Math.min(0.4, Math.abs(d) * 0.09)})` : ""}">${r[0]}–${r[1]}</td>`; }).join("") + "</tr>");
+    return `<td class="c" data-tip="${esc(T(a.team_id) + " vs " + T(b.team_id))}" style="${d ? `background:rgba(var(--${d > 0 ? "pos" : "neg"}),${Math.min(0.4, Math.abs(d) * 0.09)})` : ""}">${r[0]}–${r[1]}</td>`; }).join("") + "</tr>");
   const game = (rows, fmt) => table([["Team"],["Season"],["Wk",1],["Score",1],["Against"]], rows.map(g => `<tr${me((ms.find(z => z.key === g.key) || {}).team_id)}><td>${cn(g.team)} ${m(narrow() ? "" : esc(name(g.key) !== g.team ? name(g.key) : ""))}</td><td>${g.season}${g.playoff ? " " + m("playoffs") : ""}</td><td class="n">${g.week}</td><td class="n">${fmt(g)}</td><td>${cn(g.opp_team)} ${m(f1(g.opp_points))}</td></tr>`));
   const DR = H.drafting, ord = r => r + (r === 1 ? "st" : r === 2 ? "nd" : r === 3 ? "rd" : "th");
   const drRows = DR.rows.map(r => `<tr${me(r.team_id)}><td>${who(r)}</td>${DR.seasons.map(y => { const v = r.by_season[y]; return `<td class="n" title="${v ? esc("Vs. slot " + sg(v.vs_slot)) : ""}">${v ? `${v.rank === 1 ? "<b>" + f1(v.value) + "</b>" : f1(v.value)} ${m(ord(v.rank))}` : m("–")}</td>`; }).join("")}<td class="n">${r.avg_rank.toFixed(1)}</td><td class="n">${ord(r.best_rank)} ${m("/")} ${ord(r.worst_rank)}</td><td class="n">${f1(r.finished_value)}</td><td class="n">${sg(r.finished_vs_slot)}</td></tr>`);
@@ -422,7 +433,7 @@ function rHistory() {
     `<h2>Team names</h2><p class="note">Every name each team has gone by, one per season. Only the name a team finished each season with is on record, so mid-season changes don't appear.</p>` +
     table([["Now"], ...H.seasons.map(y => [y])], ms.filter(x => x.seasons).map(x => `<tr${me(x.team_id)}><td>${who(x)}</td>${H.seasons.map(y => `<td>${x.finishes[y] ? esc(x.finishes[y].name) : m("–")}</td>`).join("")}</tr>`)) +
     `<h2>Head to head</h2><p class="note">Row team's record against column team, regular season and playoff bracket games, including this season so far.</p>` +
-    `<div id="h2h" class="matrix">${table([[""], ...order.map(b => [esc((D.teams[b.team_id] || {}).abbrev || ""), 2, b.name])], h2h)}</div>` +
+    `<div id="h2h" class="matrix">${table([[""], ...order.map(b => [esc(short2(b.team_id)), 2, T(b.team_id)])], h2h)}</div>` +
     `<div class="two"><div><h2>Highest scores</h2>${game(H.records.high, g => f1(g.points))}</div><div><h2>Lowest scores</h2>${game(H.records.low, g => f1(g.points))}</div>
      <div><h2>Biggest blowouts</h2>${game(H.records.blowout, g => "+" + f1(g.points - g.opp_points))}</div><div><h2>Most points in a loss</h2>${game(H.records.heartbreak, g => f1(g.points))}</div></div>` +
     `<h2>Draft habits</h2><p class="note">Positions taken in rounds 1–3 across every draft on record, and the average round of each manager's first quarterback and tight end.</p>` +

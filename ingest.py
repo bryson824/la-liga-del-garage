@@ -27,7 +27,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE teams (
     team_id INTEGER PRIMARY KEY, name TEXT, abbrev TEXT,
     wins INTEGER, losses INTEGER, ties INTEGER,
-    points_for REAL, points_against REAL, owner_id TEXT
+    points_for REAL, points_against REAL, owner_id TEXT, manager TEXT
 );
 CREATE TABLE players (
     player_id INTEGER PRIMARY KEY, name TEXT, position_id INTEGER,
@@ -85,6 +85,25 @@ CREATE TABLE history_picks (
     season INTEGER, overall_pick INTEGER, round INTEGER, team_id INTEGER, player_id INTEGER
 );
 """
+
+
+def load_names(path: Path = ROOT / "names.json") -> Dict[str, str]:
+    """Real names by team id, from names.json: {"2": {"team": "...", "name": "Bryson"}}.
+
+    The "team" entry is only there to help whoever fills the file in.
+    """
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    out = {}
+    for team_id, entry in raw.items():
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and name.strip():
+            out[str(team_id)] = name.strip()
+    return out
 
 
 def _load_side(conn: sqlite3.Connection, week: int, side: Optional[Dict[str, Any]]) -> None:
@@ -158,12 +177,14 @@ def ingest(client: Any, db_path: Path = DB_PATH, refresh: bool = False,
     conn.executemany("INSERT INTO meta VALUES (?,?)",
                      [(k, None if v is None else str(v)) for k, v in meta.items()])
 
+    real_names = load_names()
     for t in league["teams"]:
         rec = (t.get("record") or {}).get("overall") or {}
-        conn.execute("INSERT INTO teams VALUES (?,?,?,?,?,?,?,?,?)", (
+        conn.execute("INSERT INTO teams VALUES (?,?,?,?,?,?,?,?,?,?)", (
             t["id"], (t.get("name") or "").strip(), (t.get("abbrev") or "").strip(),
             rec.get("wins"), rec.get("losses"), rec.get("ties"),
-            rec.get("pointsFor"), rec.get("pointsAgainst"), t.get("primaryOwner")))
+            rec.get("pointsFor"), rec.get("pointsAgainst"), t.get("primaryOwner"),
+            real_names.get(str(t["id"]))))
     for m in league.get("members", []):
         conn.execute("INSERT OR REPLACE INTO managers VALUES (?,?,?)",
                      (m.get("id"), m.get("firstName"), m.get("lastName")))
