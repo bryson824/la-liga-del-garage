@@ -245,7 +245,7 @@ function rStandings() {
     const cls = [s.team_id === team ? "me" : "", i + 1 === D.playoff_teams ? "cut" : ""].join(" ").trim();
     return `<tr class="${cls}"><td class="n m">${i + 1}</td><td>${tn(s.team_id)}</td><td>${rec([s.wins, s.losses, s.ties])}</td><td class="n">${f1(s.points_for)}</td><td class="n">${f1(s.points_against)}</td><td>${s.all_play.replace("-", "–")}</td><td class="n">${f1(s.expected_wins)}</td><td class="n">${sg(s.luck)}</td><td><div class="bar"><i style="left:${left}%;width:${w}%;background:rgb(var(--${s.luck >= 0 ? "pos" : "neg"}))"></i></div></td><td class="n">${f1(dv[s.team_id])}</td><td class="n">${eff[s.team_id] ? Math.round(eff[s.team_id] * 100) + "%" : ""}</td></tr>`; });
   $("standings").innerHTML = `<h2>Standings and luck</h2>
-    <p class="note">Weeks 1–${D.through_week}. The heavy rule is the playoff line (top ${D.playoff_teams}). Luck is real wins minus expected wins.</p>` +
+    <p class="note">Weeks 1–${D.through_week}. Luck is real wins minus expected wins.</p>` +
     how(` All-play is a team's record had it played every other team every week. Expected wins applies that win rate to the games played. Draft value and lineup efficiency are this dashboard's own calculations, not ESPN's; see the Draft and Lineups tabs. Points for and against come from ESPN and can include the week in progress.`) +
     table([["",1],["Team"],["Record"],["PF",1],["PA",1],["All-play"],["Exp. wins",1],["Luck",1],[""],["Draft value",1,"Points over replacement from the players this team drafted"],["Lineup eff.",1,"Actual points as a share of the best possible lineup"]], rows);
 }
