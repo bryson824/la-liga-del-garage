@@ -6,8 +6,11 @@ on:
     branches: [main]
   schedule:
     # Times are UTC. Every 10 minutes during NFL game windows, otherwise every 6 hours.
-    - cron: "*/10 17-23 * * 0"      # Sunday afternoon and evening (US)
-    - cron: "*/10 0-5 * * 1,2,5"    # Sunday, Monday and Thursday night games
+    # Minutes are offset from :00 because GitHub drops many runs set on the hour.
+    # GitHub still skips runs. scripts/refresh-install.sh sets up a backup Mac job
+    # that starts this workflow during the same windows.
+    - cron: "3-59/10 17-23 * * 0"   # Sunday afternoon and evening (US)
+    - cron: "3-59/10 0-5 * * 1,2,5" # Sunday, Monday and Thursday night games
     - cron: "23 */6 * * *"
 
 permissions:
